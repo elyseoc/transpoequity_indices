@@ -25,7 +25,7 @@ plots.out <- file.path(my_repo, 'plots')
 
 #load necessary packages
 library(pacman)
-pacman::p_load(readxl, here, data.table, dplyr, 
+pacman::p_load(readxl, here, data.table, dplyr, tidyr,
                sf, tidycensus)
 
 ##----FUNCTIONS------------------------------------------------------------------------------------------------------------
@@ -84,8 +84,8 @@ shifted_z_scores <- z_scores - min_z_score
 colnames(shifted_z_scores) <- paste0(colnames(etc_calcs_base), "_z")
 etc_calcs <- cbind(etc$GEOID, etc_calcs_base, shifted_z_scores)
 
-# generate min-max scaled variables
 
+# generate min-max scaled variables
 min_max_scaled_vars <- as.data.frame(apply(etc_calcs_base, 2, min_max_scale))
 min_max_scaled_vars[is.na(min_max_scaled_vars)] <- 0 # again, no lead mines, need 0 coerced
 
@@ -299,15 +299,122 @@ suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
 # Loop through the suffixes and create binary output variables
 for (suffix in suffixes) {
-  input_var <- paste0("fnlrnk", suffix)
-  output_var <- paste0("fnlrnki", suffix)
-  etc_calcs[[output_var]] <- ifelse(etc_calcs[[input_var]] < 0.65, 0, 1)
+  etc_calcs[[paste0("fnlrnki", suffix)]] <- ifelse(
+    etc_calcs[[paste0("fnlrnk", suffix)]] < 0.65, 0, 1)
 }
 
 #***********************************************************************************************************************
 
 ##----EHD CALCS------------------------------------------------------------------------------------------------------------
 
+#read data
+ehd <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')), 
+                             sheet = "Measure",
+                             col_types=c('numeric', 'numeric', 'numeric',
+                                         'guess', 'guess', 'guess',
+                                         'guess', 'guess', 'guess', 
+                                         'guess')) %>% as.data.table
+
+ehd_vars <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')),
+                      sheet = "Dictionary",
+                      col_types=c('guess', 'guess', 'guess', 'guess', 'guess',
+                                  'guess')) %>% as.data.table
+
+# Join the abbreviated variable names from the Dictionary sheet and rename to GEOID for consistency
+ehd <- ehd %>%
+  left_join(select(ehd_vars, FFC, FA), by = c("ItemName" = "FFC")) %>%
+  rename(GEOID = GeoCode)
+
+# Pivot the data from long to wide format
+ehd <- ehd %>%
+  pivot_wider(
+    id_cols = GEOID,            # Unique identifier
+    names_from = FA,           # Column to spread into new columns
+    values_from = RankCalculatedValue  # Values to fill the new columns
+  )
 
 
+# Create a list of vectors with variable names for each type of scaling
+var_list <- list(
+  envex = c("dslpm_wa", "ozn_wa", "pm25_wa", "txcrls_rsei", "hghvlr_wa"),
+  enveff = c("ppr80h", "prox_hzw-tsdfs", "prox_npl", "prox_rskmns", "wwdis"),
+  senspop = c("cardiod", "lowbw"),
+  soecon = c("pndplm", "phbrd", "plmng", "ppvrty_185", "poc", "trnexp", "pnmply")
+)
 
+# Define the scaling types
+scaling_types <- c("_z", "_mm", "_d")
+
+# Iterate through the list of variable names and scaling types
+for (vars in var_list) {
+  for (var in vars) {
+    for (type in scaling_types) {
+      col_name <- paste0(var, type)
+      
+      if (type == "_z") {
+        ehd[[col_name]] <- scale(ehd[[var]], center = TRUE, scale = TRUE)
+        ehd[[col_name]] <- pmax(0, ehd[[col_name]])  # Ensure _z values are positive
+      } else if (type == "_mm") {
+        ehd[[col_name]] <- (ehd[[var]] - min(ehd[[var]], na.rm = TRUE)) /
+          (max(ehd[[var]], na.rm = TRUE) - min(ehd[[var]], na.rm = TRUE))
+      } else if (type == "_d") {
+        ehd[[col_name]] <- as.numeric(decile_scale(ehd[[var]]))
+      }
+    }
+  }
+}
+
+
+# CALCULATE the different versions of the indices
+
+# first calculate average values for each variable scaling type
+avg_calcs <- list()
+
+for (var_group in names(var_list)) {
+  for (version in scaling_types) {
+    # Calculate the sum for the current version
+    avg_calcs[[paste0("avg_", var_group, version)]] <- 
+      rowMeans(ehd[, paste0(var_list[[var_group]], version)], na.rm = TRUE)
+  }
+}
+
+avg_calcs[is.na(avg_calcs)] <- 0
+
+ehd <- cbind(ehd, avg_calcs)
+
+
+# use EHD equation to calculate deciles of scores i.e. Hierarchical scores by scaling type
+for (version in scaling_types) {
+  # Calculate the rank for the current version hierarchy
+  ehd[[paste0("ehd_fcs", version, "_h")]] <- decile_scale(
+    ((ehd[[paste0("avg_", 'envex', version)]] + 
+        0.5*ehd[[paste0("avg_", 'enveff', version)]])/2) *
+    ((ehd[[paste0("avg_", 'senspop', version)]] + 
+        ehd[[paste0("avg_", 'soecon', version)]])/2))
+  # now calculate Non-Hierarchical scores by scaling type, all decile ranked
+    # NOTE: retain weighting scheme of 0.5 for enviro effects
+  ehd[[paste0("ehd_fcs", version, "_nh")]] <- decile_scale(
+    rowSums(ehd[, paste0(var_list$envex, version)], na.rm = T) +
+      0.5 * rowSums(ehd[, paste0(var_list$enveff, version)], na.rm = T) +
+      rowSums(ehd[, paste0(var_list$senspop, version)], na.rm = T) +
+      rowSums(ehd[, paste0(var_list$soecon, version)], na.rm = T))
+}
+
+
+# calculate binary disadvantaged/not variable according to two thresholds:
+#   9s & 10s most stringent (original top 20%)
+#   7s - 10s more recent, less stringent funding threshold (top 40%)
+
+# specify all suffixes of the 3X2 types of scores calculated
+suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+
+# Loop through the suffixes and create binary output variables
+for (suffix in suffixes) {
+  ehd[[paste0("ehd_fcsi20", suffix)]] <- ifelse(
+    ehd[[paste0("ehd_fcs", suffix)]] < 9, 0, 1)
+  ehd[[paste0("ehd_fcsi40", suffix)]] <- ifelse(
+    ehd[[paste0("ehd_fcs", suffix)]] < 7, 0, 1)
+}
+
+
+rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version)  #clean-up
