@@ -243,9 +243,15 @@ etc <- etc %>%
 
 
 # NOW FINAL index scores - HEIRARCHICAL
+<<<<<<< HEAD
 etc$fr_z_h <- rowSums(etc[, c("trncmpr_z", "hltcmpr_z", "evncmpr_z", "sclcmpr_z", "clmcmpr_z")])
 etc$fr_mm_h <- rowSums(etc[, c("trncmpr_mm", "hltcmpr_mm", "evncmpr_mm", "sclcmpr_mm", "clmcmpr_mm")])
 etc$fr_d_h <- rowSums(etc[, c("trncmpr_d", "hltcmpr_d", "evncmpr_d", "sclcmpr_d", "clmcmpr_d")])
+=======
+etc$fnlrnk_z_h <- rowSums(etc[, c("trncmpr_z", "hltcmpr_z", "evncmpr_z", "sclcmpr_z", "clmcmpr_z")])
+etc$fnlrnk_mm_h <- rowSums(etc[, c("trncmpr_mm", "hltcmpr_mm", "evncmpr_mm", "sclcmpr_mm", "clmcmpr_mm")])
+etc$fnlrnk_d_h <- rowSums(etc[, c("trncmpr_d", "hltcmpr_d", "evncmpr_d", "sclcmpr_d", "clmcmpr_d")])
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
 
 
 
@@ -268,6 +274,7 @@ all_other_vars <- c(
 
 
 # DOUBLE the transpo insecurity variable score, add all other values normally
+<<<<<<< HEAD
 etc$fr_z_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_z"))]) * 2 +
   rowSums(etc[, c(paste0(all_other_vars, "_z"))])
 
@@ -275,6 +282,15 @@ etc$fr_mm_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_mm"))]) * 2 +
   rowSums(etc[, c(paste0(all_other_vars, "_mm"))])
 
 etc$fr_d_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_d"))]) * 2 +
+=======
+etc$fnlrnk_z_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_z"))]) * 2 +
+  rowSums(etc[, c(paste0(all_other_vars, "_z"))])
+
+etc$fnlrnk_mm_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_mm"))]) * 2 +
+  rowSums(etc[, c(paste0(all_other_vars, "_mm"))])
+
+etc$fnlrnk_d_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_d"))]) * 2 +
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
   rowSums(etc[, c(paste0(all_other_vars, "_d"))])
 
 
@@ -285,15 +301,26 @@ suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
 # Loop through the suffixes and create binary output variables
 for (suffix in suffixes) {
+<<<<<<< HEAD
   etc[[paste0("frp", suffix)]] <- percent_rank(
     etc[[paste0("fr", suffix)]])
   etc[[paste0("fri", suffix)]] <- ifelse(
     etc[[paste0("frp", suffix)]] < 0.65, 0, 1)
+=======
+  etc[[paste0("fnlrnkp", suffix)]] <- percent_rank(
+    etc[[paste0("fnlrnk", suffix)]])
+  etc[[paste0("fnlrnki", suffix)]] <- ifelse(
+    etc[[paste0("fnlrnkp", suffix)]] < 0.65, 0, 1)
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
 }
 
 
 # subset to just final scores
+<<<<<<< HEAD
 etc_out <- etc[, grep('fr', names(etc), value = T)]
+=======
+etc_out <- etc[, grep('fnlrnk', names(etc), value = T)]
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
 # add GEOID variable on
 etc_out <- cbind(etc[c(1)], etc_out)
 
@@ -386,14 +413,22 @@ ehd <- cbind(ehd, avg_calcs)
 # use EHD equation to calculate deciles of scores i.e. Hierarchical scores by scaling type
 for (version in scaling_types) {
   # Calculate the rank for the current version hierarchy
+<<<<<<< HEAD
   ehd[[paste0("fs", version, "_h")]] <-
+=======
+  ehd[[paste0("ehd_fcs", version, "_h")]] <-
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
     ((ehd[[paste0("avg_", 'envex', version)]] + 
         0.5*ehd[[paste0("avg_", 'enveff', version)]])/2) *
     ((ehd[[paste0("avg_", 'senspop', version)]] + 
         ehd[[paste0("avg_", 'soecon', version)]])/2)
   # now calculate Non-Hierarchical scores by scaling type, all decile ranked
     # NOTE: retain weighting scheme of 0.5 for enviro effects
+<<<<<<< HEAD
   ehd[[paste0("fs", version, "_nh")]] <- 
+=======
+  ehd[[paste0("ehd_fcs", version, "_nh")]] <- 
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
     rowSums(ehd[, paste0(var_list$envex, version)], na.rm = T) +
       0.5 * rowSums(ehd[, paste0(var_list$enveff, version)], na.rm = T) +
       rowSums(ehd[, paste0(var_list$senspop, version)], na.rm = T) +
@@ -410,12 +445,21 @@ suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
 # Loop through the suffixes and create binary output variables
 for (suffix in suffixes) {
+<<<<<<< HEAD
   ehd[[paste0("fsd", suffix)]]<- decile_scale(
     ehd[[paste0("fs", suffix)]])
   ehd[[paste0("fsi9", suffix)]] <- ifelse(
     ehd[[paste0("fsd", suffix)]] < 9, 0, 1)
   ehd[[paste0("fsi7", suffix)]] <- ifelse(
     ehd[[paste0("fsd", suffix)]] < 7, 0, 1)
+=======
+  ehd[[paste0("ehd_fcsd", suffix)]]<- decile_scale(
+    ehd[[paste0("ehd_fcs", suffix)]])
+  ehd[[paste0("ehd_fcsi20", suffix)]] <- ifelse(
+    ehd[[paste0("ehd_fcsd", suffix)]] < 9, 0, 1)
+  ehd[[paste0("ehd_fcsi40", suffix)]] <- ifelse(
+    ehd[[paste0("ehd_fcsd", suffix)]] < 7, 0, 1)
+>>>>>>> 66c6ee84815d0ccd8040230edf72797d553bfe05
 }
 
 
