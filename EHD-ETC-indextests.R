@@ -25,7 +25,7 @@ plots.out <- file.path(my_repo, 'plots')
 
 #load necessary packages
 library(pacman)
-pacman::p_load(readxl, snakecase, janitor, data.table, dplyr, naniar, stringr, magrittr, scales, Hmisc,
+pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stringr, magrittr, scales, Hmisc,
                ggtern, ggplot2, ggpubr, ggridges, ggrepel, ggdist, grid, gridExtra, RColorBrewer, #viz pkgs
                sf, viridis, farver, reldist, ggnewscale, ggallin, biscale, cowplot,
                tigris, tidycensus, ggcorrplot,
@@ -44,13 +44,14 @@ pacman::p_load(readxl, snakecase, janitor, data.table, dplyr, naniar, stringr, m
 
 # use sf package to bring in tracts 
 tracts_20 <- tracts('WA', year=2020, cb=T) %>% 
-  st_transform(32148) #%>% 
-#erase_water(area_threshold = 0.9) %>% #intersect with water overlay and remove
+  st_transform(32148) %>% 
+  mutate(GEOID = as.numeric(GEOID))   #set variable as.numeric for later joining
 
 tracts_10 <- tracts('WA', year=2010, cb=T) %>% 
-  st_transform(32148) %>% 
-  rename(GEOID = GEO_ID)
-#erase_water(area_threshold = 0.9) %>% #intersect with water overlay and remove
+  st_transform(32148) %>%
+  rename(AFFGEOID = GEO_ID) %>%   #note that the variable GEO_ID in 2010 tracts has this AFFGEOID equivalent in 2020 - set to this for consistency
+  mutate(GEOID = as.numeric(paste0(STATE, COUNTY, TRACT)))   #set variable as.numeric for later joining
+
 
 #read in WSDOT urban areas layer
 urban_a <- read_sf(here(file.path(
@@ -97,6 +98,24 @@ for (i in seq_along(df_list)) {
   assign(df_names[i], df_list[[i]])
 }
 
+rm(df, df_list, df_names, i, overlap, tracts_calcs, urban_a)    #clean-up
+
+
+#bring in ETC & EHD processed scoring data
+ehd_out <- read.csv(file.path(data.out, 'ehd_scores'))
+etc_out <- read.csv(file.path(data.out, 'etc_scores'))
+
+
+# join the index scores to the related shp of tracts
+ehd_out <- ehd_out %>%
+  left_join(select(tracts_10, GEOID, is_urban))
+
+
+# write out shps with added scoring data
+write_sf(ehd_out, file.path(data.out, 'ehd_scores_urban-rural-des1.shp'))
+st_write(tracts_20, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
+
+
 #***********************************************************************************************************************
 
 
@@ -108,7 +127,23 @@ for (i in seq_along(df_list)) {
 
 
 
-## NEEDS WORK
+## NEEDS WORK -----------------
+
+## for some reason, the geometry is not being recognized 
+tracts_10 <- tracts_10 #%>%
+#erase_water(area_threshold = 0.9) %>% #intersect with water overlay and remove
+left_join(ehd_out)
+
+tracts_20 <- tracts_20 #%>%
+#erase_water(area_threshold = 0.9) %>% #intersect with water overlay and remove
+left_join(etc_out)
+
+
+# write out shps with added scoring data
+write_sf(tracts_10, file.path(data.out, 'ehd_scores_urban-rural-des1.shp'))
+st_write(tracts_20, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
+
+
 
 variables_to_plot <- c(
   "pctnvh", "avgcmm", "trnfrq", "jb45dr", "drvpoi",
