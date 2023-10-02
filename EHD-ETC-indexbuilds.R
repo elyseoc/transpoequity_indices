@@ -292,7 +292,8 @@ for (suffix in suffixes) {
 
 
 # subset to just final scores
-etc_out <- etc[, grep('fr', names(etc), value = T)]
+etc_out <- etc[, !grepl('trn', names(etc)) & grepl('fr', names(etc))] #have to specify the 'trn' drop to remove transit frequency (trnfr) variables
+
 
 # add GEOID variable on
 etc_out <- cbind(etc[c(1)], etc_out)
@@ -421,7 +422,8 @@ for (suffix in suffixes) {
 
 
 # subset to just final scores
-ehd_out <- ehd[,grep('fcs', names(ehd), value = T)]
+ehd_out <- ehd[, !grepl('prox', names(ehd)) & grepl('fs', names(ehd))] #have to specify the 'prox' drop to remove hazardous waste and treatment disposal facilities (prox_...tsdfs) variables
+
 # add GEOID variable on
 ehd_out <- cbind(ehd[c(1)], ehd_out)
 
@@ -429,7 +431,7 @@ write.csv(ehd_out, file.path(data.out, 'ehd_scores'), row.names = FALSE)
 
 
 rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version,
-   ehd, ehd_vars, ehd_out, var_list)  #clean-up
+   ehd, ehd_vars, ehd_out, var_list, col_name, type, var, vars)  #clean-up
 
 #***********************************************************************************************************************
 

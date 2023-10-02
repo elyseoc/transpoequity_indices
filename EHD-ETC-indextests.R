@@ -93,13 +93,17 @@ for (i in seq_along(df_list)) {
   tracts_calcs[is.na(tracts_calcs)] <- 0 # NAs exist where there is no overlap so coerce to 0
   
   # Assign urban/not for tracts w/ >= 50% urban area
-  df$is_urban <- ifelse(tracts_calcs$overlap_ratio >= 0.5, 1, 0)
+  tracts_calcs$is_urban <- ifelse(tracts_calcs$overlap_ratio >= 0.5, 1, 0)
+  
+  # join the new variable to the base df
+  df <- left_join(df, select(tracts_calcs, GEOID, is_urban))
   
   # Assign the modified data frame back to the list
   df_list[[i]] <- df
   
   assign(df_names[i], df_list[[i]])
 }
+
 
 rm(df, df_list, df_names, i, overlap, tracts_calcs, urban_a)    #clean-up
 
@@ -112,12 +116,16 @@ etc_out <- read.csv(file.path(data.out, 'etc_scores'))
 # join the index scores to the related shp of tracts
 ehd_out <- ehd_out %>%
   left_join(select(tracts_10, GEOID, is_urban))
-
+etc_out <- etc_out %>%
+  left_join(select(tracts_20, GEOID, is_urban))
 
 # write out shps with added scoring data
-write_sf(ehd_out, file.path(data.out, 'ehd_scores_urban-rural-des1.shp'))
-st_write(tracts_20, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
+write_sf(ehd_out, file.path(data.out, 'ehd_scores_urban-rural-des.shp'))
+write_sf(etc_out, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
 
+#save as CSV as well for posterity's sake
+write.csv(st_drop_geometry(ehd_out), file.path(data.out, 'ehd_scores_urban-rural-des.csv'))
+write.csv(st_drop_geometry(etc_out), file.path(data.out, 'etc_scores_urban-rural-des.csv'))
 
 #***********************************************************************************************************************
 
