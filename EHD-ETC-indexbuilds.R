@@ -436,6 +436,90 @@ rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version,
 #***********************************************************************************************************************
 
 
+##----URBAN/RURAL DESIGNATIONS------------------------------------------------------------------------------------------------------------
+
+
+# use sf package to bring in tracts 
+tracts_20 <- tracts('WA', year=2020, cb=T) %>% 
+  st_transform(32148) %>% 
+  mutate(GEOID = as.numeric(GEOID))   #set variable as.numeric for later joining
+
+tracts_10 <- tracts('WA', year=2010, cb=T) %>% 
+  st_transform(32148) %>%
+  rename(AFFGEOID = GEO_ID) %>%   #note that the variable GEO_ID in 2010 tracts has this AFFGEOID equivalent in 2020 - set to this for consistency
+  mutate(GEOID = as.numeric(paste0(STATE, COUNTY, TRACT)))   #set variable as.numeric for later joining
+
+
+#read in WSDOT urban areas layer
+urban_a <- read_sf(here(file.path(
+  data.in, '00_Boundaries/WSDOT_-_Highway_Urban_and_Urbanized_Areas'),
+  'WSDOT_-_Highway_Urban_and_Urbanized_Areas.shp')) %>% 
+  st_transform(32148)
+
+# Perform a spatial join and calculate the overlap area for both sets of TIGER tract lines
+
+df_names <- c("tracts_10", "tracts_20")
+df_list <- list(tracts_10, tracts_20)
+
+for (i in seq_along(df_list)) {
+  df <- df_list[[i]]
+  
+  overlap <- st_intersection(df, urban_a)
+  overlap$overlap_area <- as.numeric(st_area(overlap))
+  overlap <- overlap %>% 
+    select(GEOID, overlap_area) %>% 
+    st_drop_geometry()
+  
+  df$area <- as.numeric(st_area(df))
+  
+  tracts_calcs <- df %>% 
+    select(GEOID, area) %>% 
+    st_drop_geometry()
+  
+  tracts_calcs <- left_join(tracts_calcs, overlap)
+  
+  tracts_calcs <- tracts_calcs %>%
+    group_by(GEOID) %>%
+    summarise(area = first(area), overlap_area = sum(overlap_area))
+  
+  # Calculate the overlap ratio
+  tracts_calcs$overlap_ratio <- tracts_calcs$overlap_area / tracts_calcs$area
+  tracts_calcs[is.na(tracts_calcs)] <- 0 # NAs exist where there is no overlap so coerce to 0
+  
+  # Assign urban/not for tracts w/ >= 50% urban area
+  tracts_calcs$is_urban <- ifelse(tracts_calcs$overlap_ratio >= 0.5, 1, 0)
+  
+  # join the new variable to the base df
+  df <- left_join(df, select(tracts_calcs, GEOID, is_urban))
+  
+  # Assign the modified data frame back to the list
+  df_list[[i]] <- df
+  
+  assign(df_names[i], df_list[[i]])
+}
+
+
+rm(df, df_list, df_names, i, overlap, tracts_calcs, urban_a)    #clean-up
+
+
+#bring in ETC & EHD processed scoring data
+ehd_out <- read.csv(file.path(data.out, 'ehd_scores'))
+etc_out <- read.csv(file.path(data.out, 'etc_scores'))
+
+
+# join the index scores to the related shp of tracts
+ehd_out <- ehd_out %>%
+  left_join(select(tracts_10, GEOID, is_urban))
+etc_out <- etc_out %>%
+  left_join(select(tracts_20, GEOID, is_urban))
+
+# write out shps with added scoring data
+write_sf(ehd_out, file.path(data.out, 'ehd_scores_urban-rural-des.shp'))
+write_sf(etc_out, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
+
+#***********************************************************************************************************************
+
+
 ##---SCRAP -------------------------------------------------------------------------------------------------------------
 # code originally from frey
 

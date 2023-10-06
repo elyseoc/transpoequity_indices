@@ -33,101 +33,83 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
                sf, viridis, farver, reldist, ggnewscale, ggallin, biscale, cowplot,
                tigris, tidycensus, ggcorrplot,
                broom.mixed, ggstance, jtools, factoextra, scam,
-               COINr, randtoolbox, sensobol, #sens packages
-               stargazer,
-               parallel, pbmcapply,
-               cluster, ggdendro, #HCA packages
-               #caret, mlbench, randomForest, pls,
-               zoo)
+               epitools, 
+               stargazer, zoo)
 
 #***********************************************************************************************************************
 
-##----URBAN/RURAL DESIGNATIONS------------------------------------------------------------------------------------------------------------
+#read in data
+ehd_ur <- read_sf(here(data.out, 'ehd_scores_urban-rural-des.shp'))
+etc_ur <- read_sf(here(data.out, 'etc_scores_urban-rural-des.shp'))
 
 
-# use sf package to bring in tracts 
-tracts_20 <- tracts('WA', year=2020, cb=T) %>% 
-  st_transform(32148) %>% 
-  mutate(GEOID = as.numeric(GEOID))   #set variable as.numeric for later joining
-
-tracts_10 <- tracts('WA', year=2010, cb=T) %>% 
-  st_transform(32148) %>%
-  rename(AFFGEOID = GEO_ID) %>%   #note that the variable GEO_ID in 2010 tracts has this AFFGEOID equivalent in 2020 - set to this for consistency
-  mutate(GEOID = as.numeric(paste0(STATE, COUNTY, TRACT)))   #set variable as.numeric for later joining
+# look at differences btw urban/rural scoring
+ehd_counts <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),
+                                      c(grep('is_urban', names(ehd_ur)),
+                                        grep('fsi', names(ehd_ur)))])
 
 
-#read in WSDOT urban areas layer
-urban_a <- read_sf(here(file.path(
-  data.in, '00_Boundaries/WSDOT_-_Highway_Urban_and_Urbanized_Areas'),
-  'WSDOT_-_Highway_Urban_and_Urbanized_Areas.shp')) %>% 
-  st_transform(32148)
 
-# Perform a spatial join and calculate the overlap area for both sets of TIGER tract lines
+thresholds <- c('fsi9', 'fsi7')
+suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
-df_names <- c("tracts_10", "tracts_20")
-df_list <- list(tracts_10, tracts_20)
+# Loop through the suffixes and create binary output variables
+ehd_OR_list <- list()
+ehd_OR <- data.frame(
+  it = character(),     # Create empty columns with the desired names
+  estimate = numeric(),
+  conf.low = numeric(),
+  conf.up = numeric(),
+  midp = numeric(),
+  fisher = numeric(),
+  chisq = numeric()
+)
 
-for (i in seq_along(df_list)) {
-  df <- df_list[[i]]
-  
-  overlap <- st_intersection(df, urban_a)
-  overlap$overlap_area <- as.numeric(st_area(overlap))
-  overlap <- overlap %>% 
-    select(GEOID, overlap_area) %>% 
-    st_drop_geometry()
-  
-  df$area <- as.numeric(st_area(df))
-  
-  tracts_calcs <- df %>% 
-    select(GEOID, area) %>% 
-    st_drop_geometry()
-  
-  tracts_calcs <- left_join(tracts_calcs, overlap)
-  
-  tracts_calcs <- tracts_calcs %>%
-    group_by(GEOID) %>%
-    summarise(area = first(area), overlap_area = sum(overlap_area))
-  
-  # Calculate the overlap ratio
-  tracts_calcs$overlap_ratio <- tracts_calcs$overlap_area / tracts_calcs$area
-  tracts_calcs[is.na(tracts_calcs)] <- 0 # NAs exist where there is no overlap so coerce to 0
-  
-  # Assign urban/not for tracts w/ >= 50% urban area
-  tracts_calcs$is_urban <- ifelse(tracts_calcs$overlap_ratio >= 0.5, 1, 0)
-  
-  # join the new variable to the base df
-  df <- left_join(df, select(tracts_calcs, GEOID, is_urban))
-  
-  # Assign the modified data frame back to the list
-  df_list[[i]] <- df
-  
-  assign(df_names[i], df_list[[i]])
+for (thresh in thresholds) {
+  for (suffix in suffixes) {
+    ct <- table(ehd_counts$is_urban,
+          ehd_counts[[paste0(thresh, suffix)]] )
+    
+    rownames(ct) <- c("rural", "urban")
+    colnames(ct) <- c("no", "yes")
+    
+    or <- epitools::oddsratio(ct)
+    
+    ehd_OR_list[[paste0(thresh, suffix)]] <- or
+    
+    row <- data.frame(
+      it = paste0(thresh, suffix), 
+      estimate = or$measure['urban', 'estimate'],
+      conf.low = or$measure['urban', 'lower'],
+      conf.up = or$measure['urban', 'upper'],
+      midp = or$p.value['urban', 'midp.exact'],
+      fisher = or$p.value['urban', 'fisher.exact'],
+      chisq = or$p.value['urban', 'chi.square']
+    )
+    
+    ehd_OR <- rbind(ehd_OR, row)
+  }
 }
 
-
-rm(df, df_list, df_names, i, overlap, tracts_calcs, urban_a)    #clean-up
-
-
-#bring in ETC & EHD processed scoring data
-ehd_out <- read.csv(file.path(data.out, 'ehd_scores'))
-etc_out <- read.csv(file.path(data.out, 'etc_scores'))
+rm(ct, or, row, suffix, thresh)  #clean-up
 
 
-# join the index scores to the related shp of tracts
-ehd_out <- ehd_out %>%
-  left_join(select(tracts_10, GEOID, is_urban))
-etc_out <- etc_out %>%
-  left_join(select(tracts_20, GEOID, is_urban))
-
-# write out shps with added scoring data
-write_sf(ehd_out, file.path(data.out, 'ehd_scores_urban-rural-des.shp'))
-write_sf(etc_out, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
-
-#save as CSV as well for posterity's sake
-write.csv(st_drop_geometry(ehd_out), file.path(data.out, 'ehd_scores_urban-rural-des.csv'))
-write.csv(st_drop_geometry(etc_out), file.path(data.out, 'etc_scores_urban-rural-des.csv'))
-
-#***********************************************************************************************************************
+ehd_OR <- ehd_OR %>%
+  mutate(
+    rescale = case_when(
+    grepl("z", it) ~ "z-scale",
+    grepl("mm", it) ~ "min-max",
+    grepl("d", it) ~ "deciles"
+    ),
+    thresh = case_when(
+      grepl("7", it) ~ "7-10",
+      grepl("9", it) ~ "9-10"
+    ),
+    hier = case_when(
+      grepl("_h", it) ~ "hierarchical",
+      grepl("nh", it) ~ "non-hierarchical"
+    )
+  )
 
 
 
