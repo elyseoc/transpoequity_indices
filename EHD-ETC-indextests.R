@@ -7,6 +7,7 @@
 #
 # NOTES:
 # partially derivative of code developed by j.f. found at https://github.com/jfrostad/ehd_mapsense/tree/main/code
+# forest plot code derivative of code developed by K. Hoffman found at https://www.khstats.com/blog/forest-plots/ 
 #***********************************************************************************************************************
 
 ##----CONFIG------------------------------------------------------------------------------------------------------------
@@ -38,22 +39,25 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
 
 #***********************************************************************************************************************
 
+##---TEST URBAN/RURAL DISADVANTAGE REPRESENTATION-----------------------------------------------------------------------
+
 #read in data
 ehd_ur <- read_sf(here(data.out, 'ehd_scores_urban-rural-des.shp'))
 etc_ur <- read_sf(here(data.out, 'etc_scores_urban-rural-des.shp'))
 
+#remove geometry for calculations and ensure only complete cases (some water-only tracts remain)
+ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),])
+etc_ur <- st_drop_geometry(etc_ur[complete.cases(etc_ur$is_urban),])
 
-# look at differences btw urban/rural scoring
-ehd_counts <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),
-                                      c(grep('is_urban', names(ehd_ur)),
-                                        grep('fsi', names(ehd_ur)))])
-
-
-
-thresholds <- c('fsi9', 'fsi7')
+# create vectors of iterations
 suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
-# Loop through the suffixes and create binary output variables
+
+# EHD -------
+# create vectors of variable thresholds unique to EHD for looping
+thresholds <- c('fsi9', 'fsi7')
+
+# create a list for raw calcs and a df of key outputs for analysis
 ehd_OR_list <- list()
 ehd_OR <- data.frame(
   it = character(),     # Create empty columns with the desired names
@@ -65,10 +69,11 @@ ehd_OR <- data.frame(
   chisq = numeric()
 )
 
+# loop through odds ratio calculations and save outputs to df
 for (thresh in thresholds) {
   for (suffix in suffixes) {
-    ct <- table(ehd_counts$is_urban,
-          ehd_counts[[paste0(thresh, suffix)]] )
+    ct <- table(ehd_ur$is_urban,
+                ehd_ur[[paste0(thresh, suffix)]] )
     
     rownames(ct) <- c("rural", "urban")
     colnames(ct) <- c("no", "yes")
@@ -91,29 +96,120 @@ for (thresh in thresholds) {
   }
 }
 
-rm(ct, or, row, suffix, thresh)  #clean-up
-
-
 ehd_OR <- ehd_OR %>%
   mutate(
-    rescale = case_when(
-    grepl("z", it) ~ "z-scale",
-    grepl("mm", it) ~ "min-max",
-    grepl("d", it) ~ "deciles"
-    ),
     thresh = case_when(
-      grepl("7", it) ~ "7-10",
-      grepl("9", it) ~ "9-10"
+      grepl("7", it) ~ "top 40%",
+      grepl("9", it) ~ "top 20%"
+      ),
+    index ='EHD'
+  )
+
+rm(ct, or, row, suffix, thresh, thresholds)  #clean-up
+
+# ETC -------
+
+# create a list for raw calcs and a df of key outputs for analysis
+etc_OR_list <- list()
+etc_OR <- data.frame(
+  it = character(),     # Create empty columns with the desired names
+  estimate = numeric(),
+  conf.low = numeric(),
+  conf.up = numeric(),
+  midp = numeric(),
+  fisher = numeric(),
+  chisq = numeric()
+)
+
+# loop through odds ratio calculations and save outputs to df
+for (suffix in suffixes) {
+  ct <- table(etc_ur$is_urban,
+              etc_ur[[paste0('fri', suffix)]] )
+  
+  rownames(ct) <- c("rural", "urban")
+  colnames(ct) <- c("no", "yes")
+  
+  or <- epitools::oddsratio(ct)
+  
+  etc_OR_list[[paste0('fri', suffix)]] <- or
+  
+  row <- data.frame(
+    it = paste0('fri', suffix), 
+    estimate = or$measure['urban', 'estimate'],
+    conf.low = or$measure['urban', 'lower'],
+    conf.up = or$measure['urban', 'upper'],
+    midp = or$p.value['urban', 'midp.exact'],
+    fisher = or$p.value['urban', 'fisher.exact'],
+    chisq = or$p.value['urban', 'chi.square']
+  )
+  
+  etc_OR <- rbind(etc_OR, row)
+}
+
+etc_OR$thresh <- 'top 35%'
+etc_OR$index <- 'ETC'
+
+rm(ct, or, row, suffix)  #clean-up
+
+
+# bind BOTH & prep for analysis --------------
+
+#bind
+both_OR <- rbind(ehd_OR, etc_OR)
+
+both_OR <- both_OR %>%
+  mutate(
+    rescale = case_when(
+      grepl("z", it) ~ "z-scale",
+      grepl("mm", it) ~ "min-max",
+      grepl("d", it) ~ "deciles"
     ),
     hier = case_when(
       grepl("_h", it) ~ "hierarchical",
       grepl("nh", it) ~ "non-hierarchical"
+    ),
+    p.value = case_when(
+      chisq < .001 ~ "<0.001",
+      round(chisq, 2) == .05 ~ as.character(round(chisq,3)),
+      chisq < .01 ~ str_pad( # if less than .01, go one more decimal place
+        as.character(round(chisq, 3)),
+        width = 4,
+        pad = "0",
+        side = "right"
+      ),
+      TRUE ~ str_pad( # otherwise just round to 2 decimal places and pad string so that .2 reads as 0.20
+        as.character(round(chisq, 2)),
+        width = 4,
+        pad = "0",
+        side = "right"
+      )
+    ),
+    across(
+      c(estimate, conf.low, conf.up),
+      ~ str_pad(
+        round(.x, 2),
+        width = 4,
+        pad = "0",
+        side = "right"
+      )
+    ),
+    version = 
+      paste(index, rescale, hier, thresh, sep = ', '),
+    estimate_lab = 
+      paste0(estimate, " (", conf.low, "-", conf.up, ")")
+  ) %>%
+  bind_rows(
+    data.frame(
+      version = "Version",
+      estimate_lab = "Likelihood of Urban Disadvantage (95% CI)",
+      conf.low = "",
+      conf.up = "",
+      p.value = "p-value"
     )
   )
 
 
-
-
+  
 
 
 
@@ -175,6 +271,15 @@ ggplot(data = melted_data, aes(x = value, fill = Category)) +
 
 
 ##---SCRAP -------------------------------------------------------------------------------------------------------------
+
+# my scraps
+
+ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),
+                                  c(grep('is_urban', names(ehd_ur)),
+                                    grep('fsi', names(ehd_ur)))])
+
+
+
 # code originally from frey
 
 # clear memory
