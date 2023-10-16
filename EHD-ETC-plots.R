@@ -3,6 +3,7 @@
 # Date: 09/23/2023
 # Purpose: POST EHD-ETC-indexbuilds - explore and analyze sensitivity re: urban/rural correlations
 # PRE-code: "/PhD Work/WSDOT Equity/Analysis/transpoequity_indices/EHD-ETC-indexbuilds.R"
+#         AND "/PhD Work/WSDOT Equity/Analysis/transpoequity_indices/EHD-ETC-correlationtests.R"
 # source("/PhD Work/WSDOT Equity/Analysis/transpoequity_indices/EHD-ETC-indextests.R", echo=T)
 #
 # NOTES:
@@ -39,164 +40,155 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
 
 #***********************************************************************************************************************
 
-##---TEST URBAN/RURAL DISADVANTAGE REPRESENTATION-----------------------------------------------------------------------
+##---PLOT ODDS RATIO RESULTS-----------------------------------------------------------------------
 
-#read in data
-ehd_ur <- read_sf(here(data.out, 'ehd_scores_urban-rural-des.shp'))
-etc_ur <- read_sf(here(data.out, 'etc_scores_urban-rural-des.shp'))
+# generate forestplot of odds ratio results
+p <- 
+  both_OR |>
+  ggplot(aes(y = fct_rev(version))) + 
+  theme_classic() +
+  geom_point(aes(x=estimate), shape=15, size=3) +
+  geom_linerange(aes(xmin=conf.low, xmax=conf.up)) +
+  geom_vline(xintercept = 0, linetype="dashed") +
+  labs(x="Likelihood of Urban Disadvantage Assignment", y="") +
+  #coord_cartesian(ylim=c(1,11), xlim=c(-1, .5)) +
+  #annotate("text", x = .3, y = 11, label = "Urban Disadvantage more likely")
+p
 
-#remove geometry for calculations and ensure only complete cases (some water-only tracts remain)
-ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),])
-etc_ur <- st_drop_geometry(etc_ur[complete.cases(etc_ur$is_urban),])
+p_mid <- p + 
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank())
+p_mid
 
-# create vectors of iterations
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
 
-# EHD -------
-# create vectors of variable thresholds unique to EHD for looping
-thresholds <- c('fsi9', 'fsi7')
-
-# create a list for raw calcs and a df of key outputs for analysis
-ehd_OR_list <- list()
-ehd_OR <- data.frame(
-  it = character(),     # Create empty columns with the desired names
-  estimate = numeric(),
-  conf.low = numeric(),
-  conf.up = numeric(),
-  midp = numeric(),
-  fisher = numeric(),
-  chisq = numeric()
-)
-
-# loop through odds ratio calculations and save outputs to df
-for (thresh in thresholds) {
-  for (suffix in suffixes) {
-    ct <- table(ehd_ur$is_urban,
-                ehd_ur[[paste0(thresh, suffix)]] )
-    
-    rownames(ct) <- c("rural", "urban")
-    colnames(ct) <- c("no", "yes")
-    
-    or <- epitools::oddsratio(ct)
-    
-    ehd_OR_list[[paste0(thresh, suffix)]] <- or
-    
-    row <- data.frame(
-      it = paste0(thresh, suffix), 
-      estimate = or$measure['urban', 'estimate'],
-      conf.low = or$measure['urban', 'lower'],
-      conf.up = or$measure['urban', 'upper'],
-      midp = or$p.value['urban', 'midp.exact'],
-      fisher = or$p.value['urban', 'fisher.exact'],
-      chisq = or$p.value['urban', 'chi.square']
+#annotation NEEDS WORK
+%>%
+  bind_rows(
+    data.frame(
+      version = "Version",
+      estimate_lab = "Likelihood of Urban Disadvantage (95% CI)",
+      conf.low = NULL,
+      conf.up = NULL,
+      p.value = "p-value"
     )
-    
-    ehd_OR <- rbind(ehd_OR, row)
-  }
-}
-
-ehd_OR <- ehd_OR %>%
-  mutate(
-    thresh = case_when(
-      grepl("7", it) ~ "top 40%",
-      grepl("9", it) ~ "top 20%"
-      ),
-    index ='EHD'
   )
 
-rm(ct, or, row, suffix, thresh, thresholds)  #clean-up
 
-# ETC -------
 
-# create a list for raw calcs and a df of key outputs for analysis
-etc_OR_list <- list()
-etc_OR <- data.frame(
-  it = character(),     # Create empty columns with the desired names
-  estimate = numeric(),
-  conf.low = numeric(),
-  conf.up = numeric(),
-  midp = numeric(),
-  fisher = numeric(),
-  chisq = numeric()
+
+
+
+# generate annotation for left side of plot
+p_left <-
+  both_OR  |>
+  ggplot(aes(y = version))
+p_left
+
+p_left <- 
+  p_left +
+  geom_text(aes(x = 0, label = version), hjust = 0, fontface = "bold")
+p_left
+
+
+p_left <- 
+  p_left +
+  geom_text(
+    aes(x = 1, label = estimate_lab),
+    hjust = 0,
+    fontface = ifelse(both_OR$estimate_lab == 
+                        "Likelihood of Urban Disadvantage (95% CI)", "bold", "plain")
+  )
+
+p_left
+
+p_left <-
+  p_left +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 4))
+
+p_left
+
+# generate annotation for left side of plot
+p_right <-
+  both_OR  |>
+  ggplot() +
+  geom_text(
+    aes(x = 0, y = version, label = p.value),
+    hjust = 0,
+    fontface = ifelse(both_OR$p.value == "p-value", "bold", "plain")
+  ) +
+  theme_void() 
+
+p_right
+
+layout <- c(
+  area(t = 0, l = 0, b = 30, r = 3), # left plot, starts at the top of the page (0) and goes 30 units down and 3 units to the right
+  area(t = 1, l = 4, b = 30, r = 9), # middle plot starts a little lower (t=1) because there's no title. starts 1 unit right of the left plot (l=4, whereas left plot is r=3), goes to the bottom of the page (30 units), and 6 units further over from the left plot (r=9 whereas left plot is r=3)
+  area(t = 0, l = 9, b = 30, r = 11) # right most plot starts at top of page, begins where middle plot ends (l=9, and middle plot is r=9), goes to bottom of page (b=30), and extends two units wide (r=11)
+)
+# final plot arrangement
+p_left + p_mid + p_right + plot_layout(design = layout)
+
+
+
+
+
+
+## NEEDS WORK -----------------
+
+## for some reason, the geometry is not being recognized 
+tracts_10 <- tracts_10 #%>%
+#erase_water(area_threshold = 0.9) %>% #intersect with water overlay and remove
+left_join(ehd_out)
+
+tracts_20 <- tracts_20 #%>%
+#erase_water(area_threshold = 0.9) %>% #intersect with water overlay and remove
+left_join(etc_out)
+
+
+# write out shps with added scoring data
+write_sf(tracts_10, file.path(data.out, 'ehd_scores_urban-rural-des1.shp'))
+st_write(tracts_20, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
+
+
+
+variables_to_plot <- c(
+  "pctnvh", "avgcmm", "trnfrq", "jb45dr", "drvpoi",
+  "wlkpoi", "avghht", "ftltsp"
 )
 
-# loop through odds ratio calculations and save outputs to df
-for (suffix in suffixes) {
-  ct <- table(etc_ur$is_urban,
-              etc_ur[[paste0('fri', suffix)]] )
-  
-  rownames(ct) <- c("rural", "urban")
-  colnames(ct) <- c("no", "yes")
-  
-  or <- epitools::oddsratio(ct)
-  
-  etc_OR_list[[paste0('fri', suffix)]] <- or
-  
-  row <- data.frame(
-    it = paste0('fri', suffix), 
-    estimate = or$measure['urban', 'estimate'],
-    conf.low = or$measure['urban', 'lower'],
-    conf.up = or$measure['urban', 'upper'],
-    midp = or$p.value['urban', 'midp.exact'],
-    fisher = or$p.value['urban', 'fisher.exact'],
-    chisq = or$p.value['urban', 'chi.square']
-  )
-  
-  etc_OR <- rbind(etc_OR, row)
-}
+# Create a data frame with the selected variables and their scaled versions
+selected_data <- etc_calcs[, c(
+  variables_to_plot,
+  paste0(variables_to_plot, "_z"),
+  paste0(variables_to_plot, "_mm"),
+  paste0(variables_to_plot, "_d")
+)]
 
-etc_OR$thresh <- 'top 35%'
-etc_OR$index <- 'ETC'
+# Melt the data frame for plotting
+melted_data <- reshape2::melt(selected_data)
 
-rm(ct, or, row, suffix)  #clean-up
+variable_categories <- rep("Raw", length(variables_to_plot))
+variable_categories <- c(variable_categories, rep("z-scaled", length(variables_to_plot)))
+variable_categories <- c(variable_categories, rep("Min-Max", length(variables_to_plot)))
+variable_categories <- c(variable_categories, rep("Deciles", length(variables_to_plot)))
+
+# Add the new 'Category' variable to 'melted_data'
+melted_data$Category <- factor(variable_categories, levels = c("Raw", "z-scaled", "Min-Max", "Deciles"))
 
 
-# bind BOTH & prep for analysis --------------
+# Plot the density plots
+ggplot(data = melted_data, aes(x = value, fill = Category)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free_y") +
+  scale_fill_manual(values = c("blue", "green", "red", "purple")) +
+  labs(title = "Density Plots of Original and Scaled Variables") +
+  theme_minimal()
 
-#bind
-both_OR <- rbind(ehd_OR, etc_OR)
 
-both_OR <- both_OR %>%
-  mutate(
-    rescale = case_when(
-      grepl("z", it) ~ "z-scale",
-      grepl("mm", it) ~ "min-max",
-      grepl("d", it) ~ "deciles"
-    ),
-    hier = case_when(
-      grepl("_h", it) ~ "hierarchical",
-      grepl("nh", it) ~ "non-hierarchical"
-    ),
-    p.value = case_when(
-      chisq < .001 ~ "<0.001",
-      round(chisq, 2) == .05 ~ as.character(round(chisq,3)),
-      chisq < .01 ~ str_pad( # if less than .01, go one more decimal place
-        as.character(round(chisq, 3)),
-        width = 4,
-        pad = "0",
-        side = "right"
-      ),
-      TRUE ~ str_pad( # otherwise just round to 2 decimal places and pad string so that .2 reads as 0.20
-        as.character(round(chisq, 2)),
-        width = 4,
-        pad = "0",
-        side = "right"
-      )
-    ),
-    across(
-      c(estimate, conf.low, conf.up),
-      ~ round(as.numeric(.x), 2)
-    ),
-    version = 
-      paste(index, rescale, hier, thresh, sep = ', '),
-    estimate_lab = 
-      paste0(estimate, " (", conf.low, "-", conf.up, ")")
-  ) 
-
-write.csv(both_OR, file.path(data.out, 'oddsratios_both'), row.names = FALSE)
-
-#***********************************************************************************************************************
 
 
 ##---SCRAP -------------------------------------------------------------------------------------------------------------
