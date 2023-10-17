@@ -71,18 +71,19 @@ ehd <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')),
 ehd_vars <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')),
                       sheet = "Dictionary",
                       col_types=c('guess', 'guess', 'guess', 'guess', 'guess',
-                                  'guess')) %>% as.data.table
+                                  'guess', 'guess', 'guess')) %>% as.data.table
+
 
 # Join the abbreviated variable names from the Dictionary sheet and rename to GEOID for consistency
 ehd <- ehd %>%
-  left_join(select(ehd_vars, FFC, FA), by = c("ItemName" = "FFC")) %>%
+  left_join(select(ehd_vars, FFC, var), by = c("ItemName" = "FFC")) %>%
   rename(GEOID = GeoCode)
 
 # Pivot the data from long to wide format
 ehd <- ehd %>%
   pivot_wider(
     id_cols = GEOID,            # Unique identifier
-    names_from = FA,           # Column to spread into new columns
+    names_from = var,           # Column to spread into new columns
     values_from = RankCalculatedValue  # Values to fill the new columns
   )
 

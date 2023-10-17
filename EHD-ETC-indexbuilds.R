@@ -291,6 +291,10 @@ for (suffix in suffixes) {
 }
 
 
+#write out full calc set
+write.csv(etc, file.path(data.out, 'etc_allcalcs'), row.names = FALSE)
+
+
 # subset to just final scores
 etc_out <- etc[, !grepl('trn', names(etc)) & grepl('fr', names(etc))] #have to specify the 'trn' drop to remove transit frequency (trnfr) variables
 
@@ -298,12 +302,33 @@ etc_out <- etc[, !grepl('trn', names(etc)) & grepl('fr', names(etc))] #have to s
 # add GEOID variable on
 etc_out <- cbind(etc[c(1)], etc_out)
 
+rm(etc_all_vars, trans_insec_vars, all_other_vars, suffix, suffixes, 
+   etc)  #clean-up
+
+
+
+# calculate measures of disadvantage variability
+
+# calculate range of percentile rank values
+etc_out <- etc_out %>%
+  rowwise() %>%
+  mutate(frp_range = 
+              max(c_across(starts_with("frp"))) - min(c_across(starts_with("frp")))
+  ) %>%
+  ungroup()
+
+
+# sum of instances of disadvantage assignment
+# create vectors of iterations to be considered
+suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+
+#sum into a single count
+etc_out$fri_counts <- rowSums(etc_out[paste0("fri", suffixes)])
+
+
 #write it out
 write.csv(etc_out, file.path(data.out, 'etc_scores'), row.names = FALSE)
 
-
-rm(etc_all_vars, trans_insec_vars, all_other_vars, suffix, suffixes, 
-   etc, etc_out)  #clean-up
 
 #***********************************************************************************************************************
 
@@ -311,27 +336,28 @@ rm(etc_all_vars, trans_insec_vars, all_other_vars, suffix, suffixes,
 
 #read data
 ehd <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')), 
-                             sheet = "Measure",
-                             col_types=c('numeric', 'numeric', 'numeric',
-                                         'guess', 'guess', 'guess',
-                                         'guess', 'guess', 'guess', 
-                                         'guess')) %>% as.data.table
+                 sheet = "Measure",
+                 col_types=c('numeric', 'numeric', 'numeric',
+                             'guess', 'guess', 'guess',
+                             'guess', 'guess', 'guess', 
+                             'guess')) %>% as.data.table
 
 ehd_vars <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')),
                       sheet = "Dictionary",
                       col_types=c('guess', 'guess', 'guess', 'guess', 'guess',
-                                  'guess')) %>% as.data.table
+                                  'guess', 'guess', 'guess')) %>% as.data.table
+
 
 # Join the abbreviated variable names from the Dictionary sheet and rename to GEOID for consistency
 ehd <- ehd %>%
-  left_join(select(ehd_vars, FFC, FA), by = c("ItemName" = "FFC")) %>%
+  left_join(select(ehd_vars, FFC, var), by = c("ItemName" = "FFC")) %>%
   rename(GEOID = GeoCode)
 
 # Pivot the data from long to wide format
 ehd <- ehd %>%
   pivot_wider(
     id_cols = GEOID,            # Unique identifier
-    names_from = FA,           # Column to spread into new columns
+    names_from = var,           # Column to spread into new columns
     values_from = RankCalculatedValue  # Values to fill the new columns
   )
 
@@ -412,13 +438,17 @@ suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
 # Loop through the suffixes and create binary output variables
 for (suffix in suffixes) {
-  ehd[[paste0("fsd", suffix)]]<- decile_scale(
+  ehd[[paste0("fsp", suffix)]]<- percent_rank(
     ehd[[paste0("fs", suffix)]])
   ehd[[paste0("fsi9", suffix)]] <- ifelse(
-    ehd[[paste0("fsd", suffix)]] < 9, 0, 1)
+    ehd[[paste0("fsp", suffix)]] < 0.8, 0, 1)
   ehd[[paste0("fsi7", suffix)]] <- ifelse(
-    ehd[[paste0("fsd", suffix)]] < 7, 0, 1)
+    ehd[[paste0("fsp", suffix)]] < 0.6, 0, 1)
 }
+
+
+#write out full calc set
+write.csv(ehd, file.path(data.out, 'ehd_allcalcs'), row.names = FALSE)
 
 
 # subset to just final scores
@@ -427,11 +457,34 @@ ehd_out <- ehd[, !grepl('prox', names(ehd)) & grepl('fs', names(ehd))] #have to 
 # add GEOID variable on
 ehd_out <- cbind(ehd[c(1)], ehd_out)
 
+rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version,
+   ehd, ehd_vars, var_list, col_name, type, var, vars)  #clean-up
+
+
+
+# calculate measures of disadvantage variability
+
+# calculate range of percentile rank values
+ehd_out <- ehd_out %>%
+  rowwise() %>%
+  mutate(frp_range = 
+           max(c_across(starts_with("fsp"))) - min(c_across(starts_with("fsp")))
+  ) %>%
+  ungroup()
+
+
+# sum of instances of disadvantage assignment
+# create vectors of iterations to be considered
+suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+
+#sum into a single count
+ehd_out$fsi9_counts <- rowSums(ehd_out[paste0("fsi9", suffixes)])
+ehd_out$fsi7_counts <- rowSums(ehd_out[paste0("fsi7", suffixes)])
+
+
+#write it out
 write.csv(ehd_out, file.path(data.out, 'ehd_scores'), row.names = FALSE)
 
-
-rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version,
-   ehd, ehd_vars, ehd_out, var_list, col_name, type, var, vars)  #clean-up
 
 #***********************************************************************************************************************
 
@@ -514,11 +567,10 @@ etc_out <- etc_out %>%
   left_join(select(tracts_20, GEOID, is_urban))
 
 # write out shps with added scoring data
-write_sf(ehd_out, file.path(data.out, 'ehd_scores_urban-rural-des.shp'))
-write_sf(etc_out, file.path(data.out, 'etc_scores_urban-rural-des.shp'))
+write_sf(ehd_out, file.path(data.out, 'ehd_scores.shp'))
+write_sf(etc_out, file.path(data.out, 'etc_scores.shp'))
 
 #***********************************************************************************************************************
-
 
 
 

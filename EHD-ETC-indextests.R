@@ -42,8 +42,8 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
 ##---TEST URBAN/RURAL DISADVANTAGE REPRESENTATION-----------------------------------------------------------------------
 
 #read in data
-ehd_ur <- read_sf(here(data.out, 'ehd_scores_urban-rural-des.shp'))
-etc_ur <- read_sf(here(data.out, 'etc_scores_urban-rural-des.shp'))
+ehd_ur <- read_sf(here(data.out, 'ehd_scores.shp'))
+etc_ur <- read_sf(here(data.out, 'etc_scores.shp'))
 
 #remove geometry for calculations and ensure only complete cases (some water-only tracts remain)
 ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),])
