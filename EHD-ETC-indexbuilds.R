@@ -292,7 +292,7 @@ for (suffix in suffixes) {
 
 
 #write out full calc set
-write.csv(etc, file.path(data.out, 'etc_allcalcs'), row.names = FALSE)
+write.csv(etc, file.path(data.out, 'etc_allcalcs.csv'), row.names = FALSE)
 
 
 # subset to just final scores
@@ -327,7 +327,7 @@ etc_out$fri_counts <- rowSums(etc_out[paste0("fri", suffixes)])
 
 
 #write it out
-write.csv(etc_out, file.path(data.out, 'etc_scores'), row.names = FALSE)
+write.csv(etc_out, file.path(data.out, 'etc_scores.csv'), row.names = FALSE)
 
 
 #***********************************************************************************************************************
@@ -448,7 +448,7 @@ for (suffix in suffixes) {
 
 
 #write out full calc set
-write.csv(ehd, file.path(data.out, 'ehd_allcalcs'), row.names = FALSE)
+write.csv(ehd, file.path(data.out, 'ehd_allcalcs.csv'), row.names = FALSE)
 
 
 # subset to just final scores
@@ -483,7 +483,7 @@ ehd_out$fsi7_counts <- rowSums(ehd_out[paste0("fsi7", suffixes)])
 
 
 #write it out
-write.csv(ehd_out, file.path(data.out, 'ehd_scores'), row.names = FALSE)
+write.csv(ehd_out, file.path(data.out, 'ehd_scores.csv'), row.names = FALSE)
 
 
 #***********************************************************************************************************************
@@ -556,8 +556,8 @@ rm(df, df_list, df_names, i, overlap, tracts_calcs, urban_a)    #clean-up
 
 
 #bring in ETC & EHD processed scoring data
-ehd_out <- read.csv(file.path(data.out, 'ehd_scores'))
-etc_out <- read.csv(file.path(data.out, 'etc_scores'))
+ehd_out <- read.csv(file.path(data.out, 'ehd_scores.csv'))
+etc_out <- read.csv(file.path(data.out, 'etc_scores.csv'))
 
 
 # join the index scores to the related shp of tracts

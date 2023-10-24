@@ -9,6 +9,8 @@
 # NOTES:
 # partially derivative of code developed by j.f. found at https://github.com/jfrostad/ehd_mapsense/tree/main/code
 # forest plot code derivative of code developed by K. Hoffman found at https://www.khstats.com/blog/forest-plots/ 
+# color palette info:  https://search.r-project.org/CRAN/refmans/viridisLite/html/viridis.html 
+#                      https://r-graph-gallery.com/38-rcolorbrewers-palettes.html
 #***********************************************************************************************************************
 
 ##----CONFIG------------------------------------------------------------------------------------------------------------
@@ -33,107 +35,370 @@ library(pacman)
 pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stringr, magrittr, scales, Hmisc,
                ggtern, ggplot2, ggpubr, ggridges, ggrepel, ggdist, grid, gridExtra, RColorBrewer, #viz pkgs
                sf, viridis, farver, reldist, ggnewscale, ggallin, biscale, cowplot, patchwork, gridarrange,
-               tigris, tidycensus, ggcorrplot, forcats,
+               tigris, tidycensus, ggcorrplot, forcats, #tmap,tmaptools, ggspatial,  NOT used, but can handle interactive
                broom.mixed, ggstance, jtools, factoextra, scam,
                epitools, 
                stargazer, zoo)
 
 #***********************************************************************************************************************
 
+
+##---PLOT VARIABLE DISTRIBUTIONS-----------------------------------------------------------------------
+
+#read in data
+ehd_allcalcs <- read.csv(file.path(data.out, 'ehd_allcalcs.csv'))
+etc_allcalcs <- read.csv(file.path(data.out, 'etc_allcalcs.csv'))
+
+
+
+
+
+
+
+#custom function to make the transformed dts
+prepFx <- function(obj, label) {
+  message('prepping', label, ' data')
+  out <- obj %>% 
+    as.data.table %>% 
+    melt(id.vars=c('uCode'), value.name='value', variable.name='indicator') %>% 
+    .[, type := label] %>% 
+    setkey(uCode, indicator)
+}
+
+
+
+#merge all types together
+trans_dt <- prepFx(coin$Data$Raw, 'raw') %>% 
+  .[, type := NULL] %>% 
+  .[, minmax := n_minmax(value, c(0,10)), by=indicator] %>% 
+  .[, centile := n_prank(value)*10, by=indicator] %>% 
+  .[, decile := n_brank(value), by=indicator] %>% 
+  .[, zscore := n_zscore(value, m_sd=c(5,2.5)), by=indicator] %>% 
+  #.[, zscore := n_zscore(value), by=indicator] %>% 
+  setnames('value', 'raw') %>% 
+  melt(id.var=c('uCode', 'indicator'), value.name='value', variable.name='type') %>% 
+  merge(theme_labels_dt, by='indicator')
+
+
+#make a more readable label
+trans_dt[, indicator_label := str_replace_all(indicator, '_', '\n')]
+
+#plot the raw data distributions
+ggplot(trans_dt[type=='raw'], aes(value, fill=theme)) +
+  geom_density(alpha=.5) +
+  scale_fill_manual('Themes', values=viridis::turbo(10)[c(1,2,7,10)]) +
+  scale_y_continuous('') +
+  scale_x_continuous('') +
+  facet_wrap(~indicator_label, scales = 'free') +
+  theme_minimal()
+file.path(viz.dir, 'raw_distributions.png') %>% ggsave(height=8, width=12)
+
+#plot the raw data distributions
+ggplot(trans_dt[type=='raw' & theme%like%'Exposure'], aes(value, fill=theme)) +
+  geom_density(alpha=.5) +
+  scale_fill_manual('Themes', values=viridis::turbo(10)[c(1,2,7,10)]) +
+  scale_y_continuous('') +
+  scale_x_continuous('') +
+  facet_wrap(~indicator_label, scales = 'free') +
+  theme_minimal()
+file.path(viz.dir, 'raw_distributions_exp.png') %>% ggsave(height=8, width=12)
+
+themDist <- function(dt, this_theme) {
+  
+  plot <-
+    ggplot(dt[theme==this_theme & type %in% c('minmax', 'zscore', 'centile', 'decile')], 
+           aes(value, fill=type)) +
+    geom_density(alpha=.5) +
+    scale_fill_viridis_d('Transformations', option='magma') +
+    scale_y_sqrt('') +
+    scale_x_continuous('') +
+    facet_wrap(~indicator_label) +
+    theme_minimal()
+  
+  plot
+  
+}
+
+pdf(file.path(viz.dir, 'trans_distributions.pdf'))
+lapply(unique(trans_dt$theme), themDist, dt=trans_dt)
+dev.off()
+
+ggplot(trans_dt[!(type=='raw')], aes(value, fill=type)) +
+  geom_density(alpha=.5) +
+  scale_fill_manual('Method', values=viridis::turbo(10)[c(1,2,7,10)]) +
+  scale_y_continuous('') +
+  scale_x_continuous('', limits=c(0,10)) +
+  facet_wrap(~indicator_label, scales='free') +
+  theme_minimal()
+file.path(viz.dir, 'trans_distributions.png') %>% ggsave(height=8, width=12)
+
+ggplot(trans_dt[!(type=='raw') & theme %like% 'Exposures'], aes(value, fill=type)) +
+  geom_density(alpha=.5) +
+  scale_fill_manual('Method', values=viridis::turbo(10)[c(1,2,7,10)]) +
+  scale_y_continuous('') +
+  scale_x_continuous('', limits=c(0,10)) +
+  facet_wrap(~indicator_label, scales='free') +
+  theme_minimal()
+file.path(viz.dir, 'trans_distributions_exp.png') %>% ggsave(height=8, width=12)
+
+
+
+
 ##---PLOT ODDS RATIO RESULTS-----------------------------------------------------------------------
+
+# read in data
+both_OR <- read.csv(file.path(data.out, 'oddsratios_both.csv')) %>%
+  arrange(desc(estimate)) 
+
+# clean up issues from column name letter drops w/ sf conversions (EHD only as of this time...)
+both_OR$hier[is.na(both_OR$hier)] <- 'non-hierarchical'
+
+# tinker with text for annotation purposes
+both_OR <- both_OR %>%
+  mutate(
+    hier = case_when(
+      hier == 'hierarchical' ~ 'hier',
+      hier == 'non-hierarchical' ~ 'non-hier'
+    ),
+    version = paste(index, rescale, hier, thresh, sep = ", ")
+  )
+
+# set up variables used in plot specification either where values are used more than once or to store text in vectors rather than in the plot specification itself
+df <- both_OR
+explain <- "Urban tracts ____ more likely to be classified as disadvantaged"
+x_labs <- c("10x", "20x", "30x", "40x", "likelihood (95% CI)", 'p-value')
+x_cuts <- c(10,20,30,40)
+x_max <- 49
+x_min <- -18
+est_ci <- 53
+pval <- 62
+name <- -0.5
+y_labs <- df$version
+y_max <- nrow(df)
 
 # generate forestplot of odds ratio results
 p <- 
-  both_OR |>
+  df %>%
   ggplot(aes(y = fct_rev(version))) + 
-  theme_classic() +
-  geom_point(aes(x=estimate), shape=15, size=3) +
-  geom_linerange(aes(xmin=conf.low, xmax=conf.up)) +
+  #geom_point(aes(x=estimate, color = rescale), size=3) +
+  geom_point(aes(x=estimate, color = rescale, shape=hier), size=3) +
+  geom_linerange(aes(xmin=conf.low, xmax=conf.up, color = rescale)) +
   geom_vline(xintercept = 0, linetype="dashed") +
-  labs(x="Likelihood of Urban Disadvantage Assignment", y="") +
-  #coord_cartesian(ylim=c(1,11), xlim=c(-1, .5)) +
-  #annotate("text", x = .3, y = 11, label = "Urban Disadvantage more likely")
+  geom_vline(xintercept = x_cuts, color="grey") +
+  annotate("rect", xmin = 1, xmax = x_max,
+           ymin = y_max-2.5, ymax = y_max,
+           fill = 'white') +
+  annotate('text', x = c(x_cuts,est_ci,pval), y = y_max-2, 
+           label = x_labs, vjust = 0) +
+  annotate('text', x = 25, y = y_max-1, label = explain, fontface = 'bold', 
+           vjust = 0) +
+  geom_text(
+    aes(x = name, y = version, label = y_labs), hjust = 1
+  ) +
+  geom_text(
+    aes(x = est_ci, y = version, label = estimate_lab)#, hjust = 0
+  ) +
+  geom_text(
+    aes(x = pval, y = version, label = p.value), #hjust = 0
+  ) +
+  coord_cartesian(xlim = c(x_min, pval+2)) +
+  annotate("rect", xmin = x_min-4, xmax = pval+3,
+           ymin = 0, ymax = 6.5,
+           alpha = 0.1) +
+  theme_void() 
 p
 
-p_mid <- p + 
-  theme(axis.line.y = element_blank(),
-        axis.ticks.y= element_blank(),
-        axis.text.y= element_blank(),
-        axis.title.y= element_blank())
-p_mid
+
+#***********************************************************************************************************************
 
 
+##---PLOT VARIATION RANGES & COUNTS-----------------------------------------------------------------------
 
-#annotation NEEDS WORK
-%>%
-  bind_rows(
-    data.frame(
-      version = "Version",
-      estimate_lab = "Likelihood of Urban Disadvantage (95% CI)",
-      conf.low = NULL,
-      conf.up = NULL,
-      p.value = "p-value"
-    )
+#read in data
+ehd_ur <- read_sf(here(data.out, 'ehd_scores.shp'))
+etc_ur <- read_sf(here(data.out, 'etc_scores.shp'))
+
+#GAVE UP on map using ggplots - probably isn't that hard, but was just easier to tinker in ArcGIS :(
+
+#prep dfs for figures
+ehd_ur <- st_drop_geometry(ehd_ur) %>%
+  na.omit()
+etc_ur <- st_drop_geometry(etc_ur) %>%
+  na.omit()
+
+ehd_ur <- ehd_ur %>%
+  mutate(
+    fs9_cnt_factors = 
+      as.factor(case_when(
+        fs9_cnt == 0 ~ '0',
+        fs9_cnt == 1 ~ '1',
+        fs9_cnt == 2 | fs9_cnt == 3 ~ '2 - 3',
+        fs9_cnt == 4 | fs9_cnt == 5 ~ '4 - 5',
+        fs9_cnt == 6 ~ '6'
+      )),
+    fs7_cnt_factors = 
+      as.factor(case_when(
+        fs7_cnt == 0 ~ '0',
+        fs7_cnt == 1 ~ '1',
+        fs7_cnt == 2 | fs7_cnt == 3 ~ '2 - 3',
+        fs7_cnt == 4 | fs7_cnt == 5 ~ '4 - 5',
+        fs7_cnt == 6 ~ '6'
+      ))
+  )
+
+etc_ur <- etc_ur %>%
+  mutate(
+    fri_counts_factors = 
+      as.factor(case_when(
+        fri_counts == 0 ~ '0',
+        fri_counts == 1 ~ '1',
+        fri_counts == 2 | fri_counts == 3 ~ '2 - 3',
+        fri_counts == 4 | fri_counts == 5 ~ '4 - 5',
+        fri_counts == 6 ~ '6'
+      ))
   )
 
 
 
+#plot rank range vs. baseline by counts of disadvantage ---------
+
+#set up the color palette to match the maps
+counts_pal <- viridis::inferno(10)[c(10,8,6,4,1)]
+#define labels used in all
+text <- "Disadvantage\nThreshold"
+legend_lab <- '# of times\nidentified as\nDisadvantaged'
+y_lab <- 'Rank Variation'
+
+#ehd
+df <- ehd_ur
+x <- df$fsp_d_h
+y <- df$frp_rng
+fill <- df$fs9_cnt_factors
+x_line <- 0.8
+y_max <- max(df$y)
+x_lab <- 'Baseline EHD Ranking'
+plot <-
+  ggplot(df, aes(x=x, y=y, fill=fill)) +
+  geom_hex(aes(alpha=log(..count..)), bins=50) +
+  geom_vline(xintercept=x_line, linetype='dashed', color='grey') +
+  annotate("rect", xmin = x_line-0.1, xmax = x_line+0.1, 
+           ymin = y_max-0.04, ymax = y_max+0.04,
+           fill = 'white') +
+  annotate("text", x = x_line, y = y_max, label = text, hjust = 0.5) +
+  #doesn't change:
+  scale_fill_manual(legend_lab, values=counts_pal) +
+  scale_x_continuous(x_lab) +
+  scale_y_continuous(y_lab) +
+  scale_alpha_continuous(guide='none', range=c(.5,1)) +
+  theme_minimal()
+  
+file.path(plots.out, 'ehd_9_rank_variation_hex.png') %>% ggsave(height=8, width=10)
+
+df <- ehd_ur
+x <- df$fsp_d_h
+y <- df$frp_rng
+fill <- df$fs7_cnt_factors
+x_line <- 0.6
+y_max <- max(df$y)
+x_lab <- 'Baseline EHD Ranking'
+plot <-
+  ggplot(df, aes(x=x, y=y, fill=fill)) +
+  geom_hex(aes(alpha=log(..count..)), bins=50) +
+  geom_vline(xintercept=x_line, linetype='dashed', color='grey') +
+  annotate("rect", xmin = x_line-0.1, xmax = x_line+0.1, 
+           ymin = y_max-0.04, ymax = y_max+0.04,
+           fill = 'white') +
+  annotate("text", x = x_line, y = y_max, label = text, hjust = 0.5) +
+  #doesn't change:
+  scale_fill_manual(legend_lab, values=counts_pal) +
+  scale_x_continuous(x_lab) +
+  scale_y_continuous(y_lab) +
+  scale_alpha_continuous(guide='none', range=c(.5,1)) +
+  theme_minimal()
+
+file.path(plots.out, 'ehd_7_rank_variation_hex.png') %>% ggsave(height=8, width=10)
+
+#etc
+df <- etc_ur
+x <- df$frp_mm_h
+y <- df$frp_range
+fill <- df$fri_counts_factors
+x_line <- 0.65
+y_max <- max(df$y)
+x_lab <- 'Baseline ETC Ranking'
+plot <-
+  ggplot(df, aes(x=x, y=y, fill=fill)) +
+  geom_hex(aes(alpha=log(..count..)), bins=50) +
+  geom_vline(xintercept=x_line, linetype='dashed', color='grey') +
+  annotate("rect", xmin = x_line-0.1, xmax = x_line+0.1, 
+           ymin = y_max-0.04, ymax = y_max+0.04,
+           fill = 'white') +
+  annotate("text", x = x_line, y = y_max, label = text, hjust = 0.5) +
+  #doesn't change:
+  scale_fill_manual(legend_lab, values=counts_pal) +
+  scale_x_continuous(x_lab) +
+  scale_y_continuous(y_lab) +
+  scale_alpha_continuous(guide='none', range=c(.5,1)) +
+  theme_minimal()
+
+file.path(plots.out, 'etc_rank_variation_hex.png') %>% ggsave(height=8, width=10)
 
 
+#plot barplots of urban/rural splits by counts of disadvantage ------------------------
 
-# generate annotation for left side of plot
-p_left <-
-  both_OR  |>
-  ggplot(aes(y = version))
-p_left
+#set up the color palette to match the maps
+counts_pal <- viridis::inferno(10)[c(10,8,6,4,1)]
+#define labels used in all
+text <- "Disadvantage\nThreshold"
+legend_lab <- '# of times\nidentified as\nDisadvantaged'
+x_lab <- 'Census Tract Type'
+y_lab <- "Count"
 
-p_left <- 
-  p_left +
-  geom_text(aes(x = 0, label = version), hjust = 0, fontface = "bold")
-p_left
+#ehd
+df <- ehd_ur
+x <- df$is_urbn %>% as.factor()
+fill <- df$fs9_cnt_factors
+plot <- 
+  ggplot(df, aes(x=x, fill=fill)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(legend_lab, values=counts_pal) +
+  scale_x_discrete(name = x_lab,
+                   labels=c("0" = "Rural", "1" = "Urban")) +
+  scale_y_continuous(y_lab) +
+  theme_minimal()
 
+file.path(plots.out, 'ehd_9_urban-rural_disadvantage_count_hex.png') %>% ggsave(height=4, width=10)
 
-p_left <- 
-  p_left +
-  geom_text(
-    aes(x = 1, label = estimate_lab),
-    hjust = 0,
-    fontface = ifelse(both_OR$estimate_lab == 
-                        "Likelihood of Urban Disadvantage (95% CI)", "bold", "plain")
-  )
+df <- ehd_ur
+x <- df$is_urbn %>% as.factor()
+fill <- df$fs7_cnt_factors
+plot <- 
+  ggplot(df, aes(x=x, fill=fill)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(legend_lab, values=counts_pal) +
+  scale_x_discrete(name = x_lab,
+                   labels=c("0" = "Rural", "1" = "Urban")) +
+  scale_y_continuous(y_lab) +
+  theme_minimal()
 
-p_left
+file.path(plots.out, 'ehd_7_urban-rural_disadvantage_count_hex.png') %>% ggsave(height=4, width=10)
 
-p_left <-
-  p_left +
-  theme_void() +
-  coord_cartesian(xlim = c(0, 4))
+#etc
+df <- etc_ur
+x <- df$is_urban %>% as.factor()
+fill <- df$fri_counts_factors
+plot <- 
+  ggplot(df, aes(x=x, fill=fill)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(legend_lab, values=counts_pal) +
+  scale_x_discrete(name = x_lab,
+                   labels=c("0" = "Rural", "1" = "Urban")) +
+  scale_y_continuous(y_lab) +
+  theme_minimal()
 
-p_left
+file.path(plots.out, 'etc_urban-rural_disadvantage_count_hex.png') %>% ggsave(height=4, width=10)
 
-# generate annotation for left side of plot
-p_right <-
-  both_OR  |>
-  ggplot() +
-  geom_text(
-    aes(x = 0, y = version, label = p.value),
-    hjust = 0,
-    fontface = ifelse(both_OR$p.value == "p-value", "bold", "plain")
-  ) +
-  theme_void() 
-
-p_right
-
-layout <- c(
-  area(t = 0, l = 0, b = 30, r = 3), # left plot, starts at the top of the page (0) and goes 30 units down and 3 units to the right
-  area(t = 1, l = 4, b = 30, r = 9), # middle plot starts a little lower (t=1) because there's no title. starts 1 unit right of the left plot (l=4, whereas left plot is r=3), goes to the bottom of the page (30 units), and 6 units further over from the left plot (r=9 whereas left plot is r=3)
-  area(t = 0, l = 9, b = 30, r = 11) # right most plot starts at top of page, begins where middle plot ends (l=9, and middle plot is r=9), goes to bottom of page (b=30), and extends two units wide (r=11)
-)
-# final plot arrangement
-p_left + p_mid + p_right + plot_layout(design = layout)
-
-
-
+#***********************************************************************************************************************
 
 
 
@@ -193,7 +458,37 @@ ggplot(data = melted_data, aes(x = value, fill = Category)) +
 
 ##---SCRAP -------------------------------------------------------------------------------------------------------------
 
+#useful tidbits
+brewer.pal(5, "YlOrRd")
+#https://r-graph-gallery.com/38-rcolorbrewers-palettes.html
+
+
 # my scraps
+
+tm_shape(na.omit(ehd_ur)) +
+  tm_borders() +  # Add borders for better visualization
+  tm_fill("frp_rng", style = "cat", title = '',
+          breaks = breaks,
+          palette = rng_palette, labels = as.character(breaks)) +
+  tm_compass(type = "arrow", position = c("right", "top"), size = 1) +  # Add a north arrow
+  tm_layout(frame = FALSE, 
+            inner.margins = c(0.05, 0.05, 0.05, 0.05),
+            legend.title.size = 1.5,
+            scale = 1.5)
+
+tm_shape(na.omit(ehd_ur)) +
+  tm_borders() +
+  tm_fill("frp_rng", style = "pretty", title = 'Frp Range',
+          n = 5, palette = rng_palette) +
+  tm_compass(type = "arrow", position = c("right", "top"), size = 1) +
+  tm_scale_bar(position = c("left", "bottom")) +  # Add a scale bar
+  tm_layout(frame = FALSE, 
+            inner.margins = c(0.05, 0.05, 0.05, 0.05),
+            legend.title.size = 1.5,
+            scale = 1.5,
+            legend.frame = TRUE)
+
+
 
 ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),
                                   c(grep('is_urban', names(ehd_ur)),

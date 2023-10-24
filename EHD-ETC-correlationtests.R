@@ -306,7 +306,7 @@ both_cor <- both_cor %>%
     )
 
 #write it out
-write.csv(both_cor, file.path(data.out, 'popdense-correlations_both'), row.names = FALSE)
+write.csv(both_cor, file.path(data.out, 'popdense-correlations_both.csv'), row.names = FALSE)
 
 # take a look
 table(both_cor[both_cor$high.likelihood.cor == 1, ]$direction.pears, 

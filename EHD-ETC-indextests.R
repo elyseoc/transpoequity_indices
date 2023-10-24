@@ -42,20 +42,28 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
 ##---TEST URBAN/RURAL DISADVANTAGE REPRESENTATION-----------------------------------------------------------------------
 
 #read in data
-ehd_ur <- read_sf(here(data.out, 'ehd_scores.shp'))
+ehd_ur <- read_sf(here(data.out, 'ehd_scores.shp')) %>%
+  rename(
+    is_urban = is_urbn   #for some reason this keeps getting shortened when writing sf
+  )
 etc_ur <- read_sf(here(data.out, 'etc_scores.shp'))
 
 #remove geometry for calculations and ensure only complete cases (some water-only tracts remain)
 ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),])
 etc_ur <- st_drop_geometry(etc_ur[complete.cases(etc_ur$is_urban),])
 
-# create vectors of iterations
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
+
+# create vectors of iterations
+#suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+                #NOTE: sometimes the 'n' gets dropped from "nh" depending on how the st wrote out
+suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_n", "_mm_n", "_d_n")
 
 # EHD -------
 # create vectors of variable thresholds unique to EHD for looping
-thresholds <- c('fsi9', 'fsi7')
+#thresholds <- c('fsi9', 'fsi7')
+thresholds <- c('fs9', 'fs7')
+                #NOTE: sometimes the 'i' gets dropped/added depending on how the st wrote out
 
 # create a list for raw calcs and a df of key outputs for analysis
 ehd_OR_list <- list()
@@ -108,6 +116,9 @@ ehd_OR <- ehd_OR %>%
 rm(ct, or, row, suffix, thresh, thresholds)  #clean-up
 
 # ETC -------
+
+# create vectors of iterations
+suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
 
 # create a list for raw calcs and a df of key outputs for analysis
 etc_OR_list <- list()
@@ -169,16 +180,11 @@ both_OR <- both_OR %>%
       grepl("nh", it) ~ "non-hierarchical"
     ),
     p.value = case_when(
-      chisq < .001 ~ "<0.001",
-      round(chisq, 2) == .05 ~ as.character(round(chisq,3)),
-      chisq < .01 ~ str_pad( # if less than .01, go one more decimal place
+      chisq < .001 ~ "***",
+      chisq < .01 ~ "**",
+      chisq < .05 ~ "*",
+      TRUE ~ str_pad( # everything >= 0.05, present as-is rounded to 3 decimal places
         as.character(round(chisq, 3)),
-        width = 4,
-        pad = "0",
-        side = "right"
-      ),
-      TRUE ~ str_pad( # otherwise just round to 2 decimal places and pad string so that .2 reads as 0.20
-        as.character(round(chisq, 2)),
         width = 4,
         pad = "0",
         side = "right"
@@ -194,7 +200,7 @@ both_OR <- both_OR %>%
       paste0(estimate, " (", conf.low, "-", conf.up, ")")
   ) 
 
-write.csv(both_OR, file.path(data.out, 'oddsratios_both'), row.names = FALSE)
+write.csv(both_OR, file.path(data.out, 'oddsratios_both.csv'), row.names = FALSE)
 
 #***********************************************************************************************************************
 
