@@ -220,8 +220,10 @@ rm(df, df_list, df_names, p.test, s.test, vars, var_tests, row,    #clean-up
 #add more legible values to df
 both_cor <- both_cor %>%
   mutate(
+    # check for pearson estimate confidence intervals that cross 0
     conf.int.crosses0 =
       ifelse(pears.conf.low < 0 & pears.conf.up > 0, 1, 0),
+    # create rounded p-value estimates 
     p.value.p = case_when(
       pears.pval < .001 ~ "<0.001",
       round(pears.pval, 2) == .05 ~ as.character(round(pears.pval,3)),
@@ -238,6 +240,7 @@ both_cor <- both_cor %>%
       TRUE ~ # otherwise just round to 2 decimal places 
         as.character(round(spear.pval, 2))
     ),
+    # compare by magnitude of p-values
     p.mag.p = case_when(
       pears.pval < .001 ~ "***",
       pears.pval < .01 ~ "**",
@@ -254,56 +257,25 @@ both_cor <- both_cor %>%
     ),
     p.mag.same =
       ifelse(p.mag.p == p.mag.s, 1, 0),
+    # compare by correlation estimate direction
     direction.pears = 
       ifelse(pears.cor < 0, "negative", "positive"),
     direction.spear = 
       ifelse(spear.rho < 0, "negative", "positive"),
     direction.same =
       ifelse(direction.pears == direction.spear, 1, 0),
+    # round values to clean up
     across(
       c(pears.cor, pears.conf.low, pears.conf.up, spear.rho),
       ~ round(as.numeric(.x), 2)
-    )
-  )
-
-
-#bring in variable names, index-spec. categories, & common/my categories
-ehd_vars <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')),
-                      sheet = "Dictionary",
-                      col_types=c('guess', 'guess', 'guess', 'guess', 'guess',
-                                  'guess', 'guess', 'guess')) %>% as.data.table
-
-etc_vars <- read_xlsx(here(file.path(data.in, 'USDOT_ETC/DataDictionary.xlsx')),
-                      sheet = "Dictionary",
-                      col_types=c('guess', 'guess', 'guess', 'guess', 'guess',
-                                  'guess', 'guess', 'guess')) %>% 
-  as.data.table
-
-
-# separate out by index type to prep for join
-ehd_cor <- both_cor %>%
-  filter(index == 'ehd')
-etc_cor <- both_cor %>%
-  filter(index == 'etc')
-
-# join additional variable info by index
-ehd_cor <- left_join(ehd_cor, ehd_vars)
-etc_cor <- left_join(etc_cor, etc_vars)
-
-#re-bind and overwrite original correlation df w/ the added variable info
-both_cor <- rbind(ehd_cor, etc_cor)
-
-rm(ehd_vars, ehd_cor, etc_vars, etc_cor)    #clean-up
-
-#separate out variables that yield similar results in both tests vs. variables that need a closer look
-# variables confidently correlated
-both_cor <- both_cor %>%
-  mutate(
+    ),
+    # variables confidently correlated
     high.likelihood.cor = 
       ifelse(
         conf.int.crosses0 == 0 & direction.same == 1 & p.mag.same == 1, 1, 0
       )
-    )
+  )
+
 
 #write it out
 write.csv(both_cor, file.path(data.out, 'popdense-correlations_both.csv'), row.names = FALSE)

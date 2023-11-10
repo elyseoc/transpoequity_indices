@@ -46,8 +46,8 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
 ##---PLOT VARIABLE DISTRIBUTIONS-----------------------------------------------------------------------
 
 #read in data
-ehd_allcalcs <- read.csv(file.path(data.out, 'ehd_allcalcs.csv'))
-etc_allcalcs <- read.csv(file.path(data.out, 'etc_allcalcs.csv'))
+ehd_all <- read.csv(file.path(data.out, 'ehd_allcalcs.csv'))
+etc_all <- read.csv(file.path(data.out, 'etc_allcalcs.csv'))
 
 
 
@@ -55,91 +55,109 @@ etc_allcalcs <- read.csv(file.path(data.out, 'etc_allcalcs.csv'))
 
 
 
-#custom function to make the transformed dts
-prepFx <- function(obj, label) {
-  message('prepping', label, ' data')
-  out <- obj %>% 
-    as.data.table %>% 
-    melt(id.vars=c('uCode'), value.name='value', variable.name='indicator') %>% 
-    .[, type := label] %>% 
-    setkey(uCode, indicator)
-}
 
 
 
-#merge all types together
-trans_dt <- prepFx(coin$Data$Raw, 'raw') %>% 
-  .[, type := NULL] %>% 
-  .[, minmax := n_minmax(value, c(0,10)), by=indicator] %>% 
-  .[, centile := n_prank(value)*10, by=indicator] %>% 
-  .[, decile := n_brank(value), by=indicator] %>% 
-  .[, zscore := n_zscore(value, m_sd=c(5,2.5)), by=indicator] %>% 
-  #.[, zscore := n_zscore(value), by=indicator] %>% 
-  setnames('value', 'raw') %>% 
-  melt(id.var=c('uCode', 'indicator'), value.name='value', variable.name='type') %>% 
-  merge(theme_labels_dt, by='indicator')
+#***********************************************************************************************************************
 
 
-#make a more readable label
-trans_dt[, indicator_label := str_replace_all(indicator, '_', '\n')]
+##---PLOT VARIABLE CORRELTATIONS-----------------------------------------------------------------------
 
-#plot the raw data distributions
-ggplot(trans_dt[type=='raw'], aes(value, fill=theme)) +
-  geom_density(alpha=.5) +
-  scale_fill_manual('Themes', values=viridis::turbo(10)[c(1,2,7,10)]) +
-  scale_y_continuous('') +
-  scale_x_continuous('') +
-  facet_wrap(~indicator_label, scales = 'free') +
-  theme_minimal()
-file.path(viz.dir, 'raw_distributions.png') %>% ggsave(height=8, width=12)
+#read in data
+both_cor <- read.csv(file.path(data.out, 'popdense-correlations_both.csv')) %>%
+  mutate(
+    index = case_when(
+      index == 'ehd' ~ 'EHD',
+      index == 'etc' ~ 'ETC'
+    )
+  )
 
-#plot the raw data distributions
-ggplot(trans_dt[type=='raw' & theme%like%'Exposure'], aes(value, fill=theme)) +
-  geom_density(alpha=.5) +
-  scale_fill_manual('Themes', values=viridis::turbo(10)[c(1,2,7,10)]) +
-  scale_y_continuous('') +
-  scale_x_continuous('') +
-  facet_wrap(~indicator_label, scales = 'free') +
-  theme_minimal()
-file.path(viz.dir, 'raw_distributions_exp.png') %>% ggsave(height=8, width=12)
+#read in variable details & definitions
+both_details <- read.csv(file.path(data.out, 'variable-details_both.csv'))
 
-themDist <- function(dt, this_theme) {
+
+#add details to correlation results
+both_cor <- left_join(both_cor, both_details)
+
+
+both_cor <- both_cor %>%
+  mutate(
+    in_both_indices_text = case_when(
+      in_both_indices == 1 ~ 'same',
+      in_both_indices == 99 ~ 'similar',
+      in_both_indices == 0 ~ 'different'
+    ),
+    full_info = 
+      paste(FFC, in_both_indices_text, sep = ', '),
+    estimate = case_when(
+      high.likelihood.cor == 0 ~ 0,
+      TRUE ~ pears.cor
+    ),
+    conf.low = case_when(
+      high.likelihood.cor == 0 ~ 0,
+      TRUE ~ pears.conf.low
+    ),
+    conf.up = case_when(
+      high.likelihood.cor == 0 ~ 0,
+      TRUE ~ pears.conf.up
+    ),
+    UR_cor = case_when(
+      estimate == 0 ~ 'none',
+      estimate > 0 ~ 'urban',
+      estimate < 0 ~ 'rural'
+    )
+  )
+
+# #filter for EHD focused comparisons
+# ehd.sim_cor <- both_cor %>%
+#   filter(index == "ehd" | in_both_indices == 1 | in_both_indices == 99)
+
+
+# set up variables used in plot specification either where values are used more than once or to store text in vectors rather than in the plot specification itself
+df <- both_cor[complete.cases(both_cor[, "in_both_indices"]), ]
+HEAL.concept <- as.factor(df$HEAL_concept) # NOTE: the variable name is used as the legend header
+Index <- df$index
+x <- df$estimate
+Variable <- as.factor(df$FFC)
+xl <- df$conf.low
+xu <- df$conf.up
+shape <- c(2,4)
+yint <- seq(5, 50, by = 5)
+
+# generate forestplot of variable correlation results
+p <- 
+  df %>%
+  ggplot(aes(y = Variable)) + 
+  geom_point(aes(x = x, color = HEAL.concept, shape = Index), size=3) +
+  geom_linerange(aes(xmin=xl, xmax=xu, color = HEAL.concept), linewidth=1) +
+  scale_shape_manual(values = shape) + 
+  geom_vline(xintercept = 0, linetype="dashed") +
+  geom_hline(yintercept = yint, color = "lightgray", linewidth=0.01) +
+  theme_classic()
+p
+
+
+#generate bar plots of variable counts per index by correlation outcome
+plots <- list()
+for (index_value in unique(Index)) {
+  data_subset <- subset(df, Index == index_value)
   
-  plot <-
-    ggplot(dt[theme==this_theme & type %in% c('minmax', 'zscore', 'centile', 'decile')], 
-           aes(value, fill=type)) +
-    geom_density(alpha=.5) +
-    scale_fill_viridis_d('Transformations', option='magma') +
-    scale_y_sqrt('') +
-    scale_x_continuous('') +
-    facet_wrap(~indicator_label) +
+  # Correlation <- data_subset$UR_cor
+  # HEAL.concept <- data_subset$HEAL_concept
+  # 
+  # data_subset <- as.data.frame(table(Correlation,HEAL.concept))
+  
+  p <- ggplot(data_subset, aes(x = UR_cor, fill = HEAL_concept)) +
+    geom_bar() +
+    labs(x = "") +
+    ylim(0, 25) + 
     theme_minimal()
   
-  plot
-  
+  plots[[index_value]] <- p
 }
 
-pdf(file.path(viz.dir, 'trans_distributions.pdf'))
-lapply(unique(trans_dt$theme), themDist, dt=trans_dt)
-dev.off()
-
-ggplot(trans_dt[!(type=='raw')], aes(value, fill=type)) +
-  geom_density(alpha=.5) +
-  scale_fill_manual('Method', values=viridis::turbo(10)[c(1,2,7,10)]) +
-  scale_y_continuous('') +
-  scale_x_continuous('', limits=c(0,10)) +
-  facet_wrap(~indicator_label, scales='free') +
-  theme_minimal()
-file.path(viz.dir, 'trans_distributions.png') %>% ggsave(height=8, width=12)
-
-ggplot(trans_dt[!(type=='raw') & theme %like% 'Exposures'], aes(value, fill=type)) +
-  geom_density(alpha=.5) +
-  scale_fill_manual('Method', values=viridis::turbo(10)[c(1,2,7,10)]) +
-  scale_y_continuous('') +
-  scale_x_continuous('', limits=c(0,10)) +
-  facet_wrap(~indicator_label, scales='free') +
-  theme_minimal()
-file.path(viz.dir, 'trans_distributions_exp.png') %>% ggsave(height=8, width=12)
+# Print the two plots
+grid.arrange(grobs = plots)
 
 
 
