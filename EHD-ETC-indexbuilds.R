@@ -41,6 +41,12 @@ decile_scale <- function(x) {
   return(cutted)
 }
 
+z_scale_and_shift <- function(x) {
+  z_scaled <- scale(x)                 # Z-scale the input vector
+  shifted <- z_scaled - min(z_scaled, na.rm = TRUE)  # Shift all values to be positive
+  return(shifted)
+}
+
 min_max_scale <- function(x) {
   (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
 }
@@ -52,7 +58,16 @@ etc <- read_sf(here(file.path(
   data.in, 'USDOT_ETC/DOT_Index_State_5_3'),'DOT_Index_State_5_3.shp')) %>%
   subset(stbbr=='WA') %>% 
   #rename tracts FIPS code column name to GEOID to match other dfs
-  dplyr::rename(GEOID = trctfp)
+  dplyr::rename(
+    GEOID = trctfp,           #rename variables to match existing naming conventions
+    frp_base = fnlrnkp,
+    fri_base = fnlrnki
+  ) %>%
+  mutate(
+    frp_base = frp_base/100   #ETC reports in % not decimal - convert to decimal
+  )
+etc_base <- st_drop_geometry(etc[, c("GEOID", "frp_base", "fri_base")]) %>%
+  mutate(GEOID = as.numeric(GEOID))
 
 
 # Select the base variables needed for calcs + retain the GEOID
@@ -69,23 +84,18 @@ etc_all_vars <- c(
   "drghtd", "pctnnd", "mnmp")
 
 etc <- st_drop_geometry(etc) #drop geometry to allow for numerical calcs
-#reverse the distributions for "Frequency of Transit Services per Sq Mi" and "Jobs within a 45-min Drive" so they add appropriately to the disadvantage estimation
+
+#**reverse the distributions for "Frequency of Transit Services per Sq Mi" and "Jobs within a 45-min Drive" so they add appropriately to the disadvantage estimation
 etc$trnfrq <- max(etc$trnfrq) - etc$trnfrq + min(etc$trnfrq)
 etc$jb45dr <- max(etc$jb45dr) - etc$jb45dr + min(etc$jb45dr)
 
 
 # Calculate z-scores for the selected variables
-z_scores <- scale(etc[, etc_all_vars])
-
-
-# Shift all z-scores to be positive
-z_scores[is.na(z_scores)] <- 0  #NOTE: there are no lead mines in WA state, which yield "NA" values
-min_z_score <- min(z_scores)
-shifted_z_scores <- z_scores - min_z_score
+z_scores <- z_scale_and_shift(etc[, etc_all_vars])
 
 # Add the shifted z-scored variables to the 'etc' data frame
-colnames(shifted_z_scores) <- paste0(colnames(z_scores), "_z")
-etc <- cbind(etc[c(1)], etc[, etc_all_vars], shifted_z_scores)
+colnames(z_scores) <- paste0(colnames(z_scores), "_z")
+etc <- cbind(etc[c(1)], etc[, etc_all_vars], z_scores)
 
 
 # generate min-max scaled variables
@@ -106,8 +116,7 @@ etc <- cbind(etc, decile_scaled_vars)
 
 
 #clean-up
-rm(decile_scaled_vars, min_max_scaled_vars, shifted_z_scores, 
-   z_scores, min_z_score)
+rm(decile_scaled_vars, min_max_scaled_vars, z_scores)
 gc()
 
 
@@ -118,7 +127,7 @@ gc()
 etc$trnsac_z <- rowSums(etc[, c(
   "pctnvh_z", "avgcmm_z", "trnfrq_z", "jb45dr_z", "drvpoi_z", "wlkpoi_z"
 )])
-etc$trnsac_z <- scale(etc$trnsac_z, center = TRUE, scale = TRUE)
+etc$trnsac_z <- z_scale_and_shift(etc$trnsac_z)
 
 etc$trnsac_mm <- rowSums(etc[, c(
   "pctnvh_mm", "avgcmm_mm", "trnfrq_mm", "jb45dr_mm", "drvpoi_mm", "wlkpoi_mm"
@@ -135,7 +144,7 @@ etc$trnsac_d <- decile_scale(etc$trnsac_d)
 etc$ftclrk_z <- rowSums(etc[, c(
   "extht_z", "extrmp_z", "drghtd_z", "pctnnd_z"
 )])
-etc$ftclrk_z <- scale(etc$ftclrk_z, center = TRUE, scale = TRUE)
+etc$ftclrk_z <- z_scale_and_shift(etc$ftclrk_z)
 
 etc$ftclrk_mm <- rowSums(etc[, c(
   "extht_mm", "extrmp_mm", "drghtd_mm", "pctnnd_mm"
@@ -148,144 +157,161 @@ etc$ftclrk_d <- rowSums(etc[, c(
 etc$ftclrk_d <- decile_scale(etc$ftclrk_d)
 
 
-#calculate each component index percentile rank score
+# generate HIERARCHICAL index values ******************************************
 
-# transportation insecurity
-etc$trncmpr_z <- rowSums(etc[, c("avghht_z", "ftltsp_z", "trnsac_z")])
-etc$trncmpr_mm <- rowSums(etc[, c("avghht_mm", "ftltsp_mm", "trnsac_mm")])
-etc$trncmpr_d <- rowSums(etc[, c("avghht_d", "ftltsp_d", "trnsac_d")])
+#calculate each component index scores & rescaling rank values
 
-# Compute the percentile rank of the sums for each re-scaling technique
-etc <- etc %>%
-  mutate(
-    trncmpr_z = percent_rank(trncmpr_z),
-    trncmpr_mm = percent_rank(trncmpr_mm),
-    trncmpr_d = percent_rank(trncmpr_d)
-  )
+# Create a list of vectors with variable names for each type of scaling
+var_list <- list(
+  trncm = c("avghht", "ftltsp", "trnsac"),                             #transporation insecurity vars
+  evncm = c("ozn", "pm25", "dslpm", "cncrtx", "hzrdst", "txcrls",      #enviro burden vars
+            "trtdsp", "rskmns", "clmns", "ppr80h",                  # "ldmns", REMOVE lead mines b/c they are all N/A b/c they do not exist in WA state
+            "hghvlr", "rlwys", "arprts", "prts", "imprdw"),
+  hltcm = c("asthm", "cncr", "bldprs", "dbts", "mntlhl"),              #health sensitivity vars
+  sclcm = c("ppvrty", "pndplm", "pnmply", "phstnr", "phbrd7",          #socioecon vuln. vars
+            "pnnsrd", "pnntrn", "endnql", "p65ldr", "p17yng",
+            "pdsb", "plmng", "pmblhm"),
+  clmcm = c("annlls", "mnmp", "ftclrk")                                #climate change risk vars
+)
 
-# environmental burden
-etc$evncmpr_z <- rowSums(etc[, c(
-  "ozn_z", "pm25_z", "dslpm_z", "cncrtx_z", "hzrdst_z",
-  "txcrls_z", "trtdsp_z", "rskmns_z", "clmns_z", "ldmns_z",
-  "ppr80h_z", "hghvlr_z", "rlwys_z", "arprts_z", "prts_z", "imprdw_z"
-)])
-etc$evncmpr_mm <- rowSums(etc[, c(
-  "ozn_mm", "pm25_mm", "dslpm_mm", "cncrtx_mm", "hzrdst_mm",
-  "txcrls_mm", "trtdsp_mm", "rskmns_mm", "clmns_mm", "ldmns_mm",
-  "ppr80h_mm", "hghvlr_mm", "rlwys_mm", "arprts_mm", "prts_mm", "imprdw_mm"
-)])
-etc$evncmpr_d <- rowSums(etc[, c(
-  "ozn_d", "pm25_d", "dslpm_d", "cncrtx_d", "hzrdst_d",
-  "txcrls_d", "trtdsp_d", "rskmns_d", "clmns_d", "ldmns_d",
-  "ppr80h_d", "hghvlr_d", "rlwys_d", "arprts_d", "prts_d", "imprdw_d"
-)])
-etc <- etc %>%
-  mutate(
-    evncmpr_z = percent_rank(evncmpr_z),
-    evncmpr_mm = percent_rank(evncmpr_mm),
-    evncmpr_d = percent_rank(evncmpr_d)
-  )
+# Define the scaling types
+scaling_types <- c("_z", "_mm", "_d")
 
+# Define the version of values combined
+hier <- '.rnk'
 
-# health vulnerability
-etc$hltcmpr_z <- rowSums(etc[, c(
-  "asthm_z", "cncr_z", "bldprs_z", "dbts_z", "mntlhl_z"
-)])
-etc$hltcmpr_mm <- rowSums(etc[, c(
-  "asthm_mm", "cncr_mm", "bldprs_mm", "dbts_mm", "mntlhl_mm"
-)])
-etc$hltcmpr_d <- rowSums(etc[, c(
-  "asthm_d", "cncr_d", "bldprs_d", "dbts_d", "mntlhl_d"
-)])
-etc <- etc %>%
-  mutate(
-    hltcmpr_z = percent_rank(hltcmpr_z),
-    hltcmpr_mm = percent_rank(hltcmpr_mm),
-    hltcmpr_d = percent_rank(hltcmpr_d)
-  )
+# Iterate through the list of categorical sets of variables and scaling types
+for (type in scaling_types) {
+  for (vars_name in names(var_list)) {
+    vars <- var_list[[vars_name]]
+    
+    # Print the current vector name
+    #print(paste("Current vector name:", vars_name))       #used to troubleshoot
+    #print(paste("Current scaling type:", type))           #used to troubleshoot
+    
+    vars <- paste(vars, type, sep = "")
+    
+    s <- rowSums(etc[, vars])               #sum to a score for each category
+    
+    col_name <- paste0(vars_name, hier, type, sep = "")
+    
+    if (type == "_z") {                                         #calculate ranks for each category
+      etc[[col_name]] <- z_scale_and_shift(s)
+    } else if (type == "_mm") {
+      etc[[col_name]] <- min_max_scale(s)
+    } else if (type == "_d") {
+      etc[[col_name]] <- decile_scale(s)
+    }   
 
+  }
+}
 
-# social vulnerability
-etc$sclcmpr_z <- rowSums(etc[, c(
-  "ppvrty_z", "pndplm_z", "pnmply_z", "phstnr_z", "phbrd7_z",
-  "pnnsrd_z", "pnntrn_z", "endnql_z", "p65ldr_z", "p17yng_z",
-  "pdsb_z", "plmng_z", "pmblhm_z"
-)])
-etc$sclcmpr_mm <- rowSums(etc[, c(
-  "ppvrty_mm", "pndplm_mm", "pnmply_mm", "phstnr_mm", "phbrd7_mm",
-  "pnnsrd_mm", "pnntrn_mm", "endnql_mm", "p65ldr_mm", "p17yng_mm",
-  "pdsb_mm", "plmng_mm", "pmblhm_mm"
-)])
-etc$sclcmpr_d <- rowSums(etc[, c(
-  "ppvrty_d", "pndplm_d", "pnmply_d", "phstnr_d", "phbrd7_d",
-  "pnnsrd_d", "pnntrn_d", "endnql_d", "p65ldr_d", "p17yng_d",
-  "pdsb_d", "plmng_d", "pmblhm_d"
-)])
-etc <- etc %>%
-  mutate(
-    sclcmpr_z = percent_rank(sclcmpr_z),
-    sclcmpr_mm = percent_rank(sclcmpr_mm),
-    sclcmpr_d = percent_rank(sclcmpr_d)
-  )
+# now a run to calc final scores
+hier_vars <- names(etc[,grepl(paste0(hier, '_', sep = ''), names(etc))])
+hnh <- '_h'
 
+threat <- c("evncm", "clmcm")
+vuln <- c("trncm", "hltcm",  "sclcm")
 
-#finally, climate & disaster risk burden
-etc$clmcmpr_z <- rowSums(etc[, c("annlls_z", "mnmp_z", "ftclrk_z")])
-etc$clmcmpr_mm <- rowSums(etc[, c("annlls_mm", "mnmp_mm", "ftclrk_mm")])
-etc$clmcmpr_d <- rowSums(etc[, c("annlls_d", "mnmp_d", "ftclrk_d")])
-etc <- etc %>%
-  mutate(
-    clmcmpr_z = percent_rank(clmcmpr_z),
-    clmcmpr_mm = percent_rank(clmcmpr_mm),
-    clmcmpr_d = percent_rank(clmcmpr_d)
-  )
+for (type in scaling_types) {
+  
+  col_name <- paste0("trncm", hier, type, sep = "")
+  etc[[col_name]] <- 2*etc[[col_name]]               #double the transpo variable
+  
+  col_name <- paste0("frp", type, hnh, ".ss", sep = "") #re-set col_name variable to final score type: Hier., Simple Sum
+  
+  vars_f <- hier_vars[grepl(type, hier_vars)]
+  
+  etc[[col_name]] <- percent_rank(rowSums(etc[, vars_f]))   #FINAL percentile-ranked value 
+  
+  
+  t <- paste(threat, hier, type, sep = "")
+  v <- paste(vuln, hier, type, sep = "")
+  
+  col_name <- paste0("frp", type, hnh, ".m", sep = "") #re-set col_name variable to final score type: Hier., Multiplicative
+  
+  etc[[col_name]] <- percent_rank(rowSums(etc[,t])*rowSums(etc[,v]))    #FINAL percentile-ranked  value 
+  
+}
 
 
 
-# NOW FINAL index scores - HEIRARCHICAL
-etc$fr_z_h <- rowSums(etc[, c("trncmpr_z", "hltcmpr_z", "evncmpr_z", "sclcmpr_z", "clmcmpr_z")])
-etc$fr_mm_h <- rowSums(etc[, c("trncmpr_mm", "hltcmpr_mm", "evncmpr_mm", "sclcmpr_mm", "clmcmpr_mm")])
-etc$fr_d_h <- rowSums(etc[, c("trncmpr_d", "hltcmpr_d", "evncmpr_d", "sclcmpr_d", "clmcmpr_d")])
+# generate NON-HIERARCHICAL index values **************************
 
-
-# ALSO calcuate final scores given a non-hierarchical calc
-#separate out transpo variables to DOUBLE them per ETC weighting criteria
-trans_insec_vars <- c(
-  "pctnvh", "avgcmm", "trnfrq", "jb45dr", "drvpoi", "wlkpoi",
+#separate out transpo & climate change variables to over-write transpo and climate change 
+var_list$trncm <- c(
+  "pctnvh", "avgcmm", "trnfrq", "jb45dr", "drvpoi", "wlkpoi",   #transporation insecurity vars NON-hierarchical
   "avghht", "ftltsp"
-)
-
-all_other_vars <- c(
-  "ozn", "pm25", "dslpm", "cncrtx",
-  "hzrdst", "txcrls", "trtdsp", "rskmns", "clmns", "ldmns",
-  "ppr80h", "hghvlr", "rlwys", "arprts", "prts", "imprdw",
-  "asthm", "cncr", "bldprs", "dbts", "mntlhl", "ppvrty",
-  "pndplm", "pnmply", "phstnr", "phbrd7", "pnnsrd", "pnntrn",
-  "endnql", "p65ldr", "p17yng", "pdsb", "plmng", "pmblhm",
-  "annlls", "extht", "extrmp", "drghtd", "pctnnd", "mnmp"
-)
+  )
+var_list$clmcm <- c(
+  "annlls", "extht", "extrmp", "drghtd", "pctnnd", "mnmp"       #climate change risk vars NON-hierarchical
+  )
 
 
-# DOUBLE the transpo insecurity variable score, add all other values normally
-etc$fr_z_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_z"))]) * 2 +
-  rowSums(etc[, c(paste0(all_other_vars, "_z"))])
+# Define the scaling types
+scaling_types <- c("_z", "_mm", "_d")
 
-etc$fr_mm_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_mm"))]) * 2 +
-  rowSums(etc[, c(paste0(all_other_vars, "_mm"))])
+# Define the version of values combined
+hier <- '.scr'
 
-etc$fr_d_nh <- rowSums(etc[, c(paste0(trans_insec_vars, "_d"))]) * 2 +
-  rowSums(etc[, c(paste0(all_other_vars, "_d"))])
+# Iterate through the list of categorical sets of variables and scaling types
+for (type in scaling_types) {
+  for (vars_name in names(var_list)) {
+    vars <- var_list[[vars_name]]
+    
+    # Print the current vector name
+    #print(paste("Current vector name:", vars_name))       #used to troubleshoot
+    
+    col_name <- paste0(vars_name, hier, type, sep = "")
+    
+    #print(paste("Current scaling type:", type))           #used to troubleshoot
+    
+    vars <- paste(vars, type, sep = "")
+    
+    etc[[col_name]] <- rowSums(etc[, vars])               #sum to a score for each category
+    
+  }
+}
+
+# now a run to calc final scores
+hier_vars <- names(etc[,grepl(paste0(hier, '_', sep = ''), names(etc))])
+hnh <- '_nh'
+
+threat <- c("evncm", "clmcm")
+vuln <- c("trncm", "hltcm",  "sclcm")
+
+for (type in scaling_types) {
+  
+  col_name <- paste0("trncm", hier, type, sep = "")
+  etc[[col_name]] <- 2*etc[[col_name]]               #double the transpo variable
+  
+  col_name <- paste0("frp", type, hnh, ".ss", sep = "") #re-set col_name variable to final score type: Hier., Simple Sum
+  
+  vars_f <- hier_vars[grepl(type, hier_vars)]
+  
+  etc[[col_name]] <- percent_rank(rowSums(etc[, vars_f]))   #FINAL percentile-ranked value 
+  
+  
+  t <- paste(threat, hier, type, sep = "")
+  v <- paste(vuln, hier, type, sep = "")
+  
+  col_name <- paste0("frp", type, hnh, ".m", sep = "") #re-set col_name variable to final score type: Hier., Multiplicative
+  
+  etc[[col_name]] <- percent_rank(rowSums(etc[,t])*rowSums(etc[,v]))    #FINAL percentile-ranked  value 
+  
+}
 
 
 
 # calculate binary disadvantaged/not variable
-# specify all suffixes of the 3X2 types of scores calculated
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+# specify all suffixes of the 3X4 types of scores calculated
+suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss", 
+              "_z_h.m", "_mm_h.m", "_d_h.m", 
+              "_z_nh.ss", "_mm_nh.ss", "_d_nh.ss",
+              "_z_nh.m", "_mm_nh.m", "_d_nh.m")
 
 # Loop through the suffixes and create binary output variables
 for (suffix in suffixes) {
-  etc[[paste0("frp", suffix)]] <- percent_rank(
-    etc[[paste0("fr", suffix)]])
   etc[[paste0("fri", suffix)]] <- ifelse(
     etc[[paste0("frp", suffix)]] < 0.65, 0, 1)
 }
@@ -300,14 +326,18 @@ etc_out <- etc[, !grepl('trn', names(etc)) & grepl('fr', names(etc))] #have to s
 
 
 # add GEOID variable on
-etc_out <- cbind(etc[c(1)], etc_out)
+etc_out <- cbind(etc[c(1)], etc_out) %>%
+  mutate(GEOID = as.numeric(GEOID))
 
-rm(etc_all_vars, trans_insec_vars, all_other_vars, suffix, suffixes, 
-   etc)  #clean-up
+rm(etc_all_vars, var_list, col_name, hier, hier_vars, hnh, s, t, v, threat, vuln, 
+   suffix, suffixes, scaling_types, type, vars, vars_f, vars_name, etc)           #clean-up
 
 
+# calculate measures of disadvantage variability *************************************
 
-# calculate measures of disadvantage variability
+#join base ranks to full set of scores
+etc_out <- left_join(etc_out, etc_base)
+
 
 # calculate range of percentile rank values
 etc_out <- etc_out %>%
@@ -319,15 +349,23 @@ etc_out <- etc_out %>%
 
 
 # sum of instances of disadvantage assignment
-# create vectors of iterations to be considered
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+# create vectors of iterations to be considered - 3x4 + _base
+suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss", 
+              "_z_h.m", "_mm_h.m", "_d_h.m", 
+              "_z_nh.ss", "_mm_nh.ss", "_d_nh.ss",
+              "_z_nh.m", "_mm_nh.m", "_d_nh.m",
+              "_base")
 
 #sum into a single count
 etc_out$fri_counts <- rowSums(etc_out[paste0("fri", suffixes)])
 
 
+
 #write it out
 write.csv(etc_out, file.path(data.out, 'etc_scores.csv'), row.names = FALSE)
+
+
+rm(etc_base, etc_out)    #clean-up
 
 
 #***********************************************************************************************************************
@@ -335,6 +373,17 @@ write.csv(etc_out, file.path(data.out, 'etc_scores.csv'), row.names = FALSE)
 ##----EHD CALCS------------------------------------------------------------------------------------------------------------
 
 #read data
+ehd_base <- read_sf(here(file.path(
+  data.in, 'WA_State_All/WA_DOH/EHD_Current'),'EHD.shp')) %>%
+  dplyr::rename(
+    GEOID = Census_Tra,           #rename variables to match existing naming conventions
+    frp_base = EHD_Rank
+  )
+ehd_base <- st_drop_geometry(ehd_base[, c("GEOID", "frp_base")]) %>%
+  mutate(GEOID = as.numeric(GEOID))
+
+ehd_base <- st_drop_geometry(ehd_base[])
+
 ehd <- read_xlsx(here(file.path(data.in, 'from_Joey/ehd_data_v3.xlsx')), 
                  sheet = "Measure",
                  col_types=c('numeric', 'numeric', 'numeric',
@@ -361,6 +410,9 @@ ehd <- ehd %>%
     values_from = RankCalculatedValue  # Values to fill the new columns
   )
 
+rm(ehd_vars)   #clean-up
+
+
 
 # Create a list of vectors with variable names for each type of scaling
 var_list <- list(
@@ -380,11 +432,9 @@ for (vars in var_list) {
       col_name <- paste0(var, type)
       
       if (type == "_z") {
-        ehd[[col_name]] <- scale(ehd[[var]], center = TRUE, scale = TRUE)
-        ehd[[col_name]] <- pmax(0, ehd[[col_name]])  # Ensure _z values are positive
+        ehd[[col_name]] <- z_scale_and_shift(ehd[[var]])
       } else if (type == "_mm") {
-        ehd[[col_name]] <- (ehd[[var]] - min(ehd[[var]], na.rm = TRUE)) /
-          (max(ehd[[var]], na.rm = TRUE) - min(ehd[[var]], na.rm = TRUE))
+        ehd[[col_name]] <- min_max_scale(ehd[[var]])
       } else if (type == "_d") {
         ehd[[col_name]] <- as.numeric(decile_scale(ehd[[var]]))
       }
@@ -393,57 +443,138 @@ for (vars in var_list) {
 }
 
 
-# CALCULATE the different versions of the indices
+# generate HIERARCHICAL index values ******************************************
 
-# first calculate average values for each variable scaling type
-avg_calcs <- list()
+# Define the version of values combined
+hier <- '.rnk'
 
-for (var_group in names(var_list)) {
-  for (version in scaling_types) {
-    # Calculate the sum for the current version
-    avg_calcs[[paste0("avg_", var_group, version)]] <- 
-      rowMeans(ehd[, paste0(var_list[[var_group]], version)], na.rm = TRUE)
+# Iterate through the list of categorical sets of variables and scaling types
+for (type in scaling_types) {
+  for (vars_name in names(var_list)) {
+    vars <- var_list[[vars_name]]
+    
+    # Print the current vector name
+    #print(paste("Current vector name:", vars_name))       #used to troubleshoot
+    #print(paste("Current scaling type:", type))           #used to troubleshoot
+    
+    vars <- paste(vars, type, sep = "")
+    
+    s <- rowSums(ehd[, vars], na.rm = TRUE)               #sum to a score for each category
+    
+    col_name <- paste0(vars_name, hier, type, sep = "")
+    
+    if (type == "_z") {                                         #calculate ranks for each category
+      ehd[[col_name]] <- z_scale_and_shift(s)
+    } else if (type == "_mm") {
+      ehd[[col_name]] <- min_max_scale(s)
+    } else if (type == "_d") {
+      ehd[[col_name]] <- decile_scale(s)
+    }   
+    
   }
 }
 
-avg_calcs[is.na(avg_calcs)] <- 0
+# now a run to calc final scores
+hier_vars <- names(ehd[,grepl(paste0(hier, '_', sep = ''), names(ehd))])
+hnh <- '_h'
 
-ehd <- cbind(ehd, avg_calcs)
+#define threats & vulnerabilities
+threat <- c("envex", "enveff")
+vuln <- c("senspop", "soecon")
 
-
-# use EHD equation to calculate deciles of scores i.e. Hierarchical scores by scaling type
-for (version in scaling_types) {
-  # Calculate the rank for the current version hierarchy
-  ehd[[paste0("fs", version, "_h")]] <-
-    ((ehd[[paste0("avg_", 'envex', version)]] + 
-        0.5*ehd[[paste0("avg_", 'enveff', version)]])/2) *
-    ((ehd[[paste0("avg_", 'senspop', version)]] + 
-        ehd[[paste0("avg_", 'soecon', version)]])/2)
-  # now calculate Non-Hierarchical scores by scaling type, all decile ranked
-    # NOTE: retain weighting scheme of 0.5 for enviro effects
-  ehd[[paste0("fs", version, "_nh")]] <- 
-    rowSums(ehd[, paste0(var_list$envex, version)], na.rm = T) +
-      0.5 * rowSums(ehd[, paste0(var_list$enveff, version)], na.rm = T) +
-      rowSums(ehd[, paste0(var_list$senspop, version)], na.rm = T) +
-      rowSums(ehd[, paste0(var_list$soecon, version)], na.rm = T)
+for (type in scaling_types) {
+  
+  col_name <- paste0("enveff", hier, type, sep = "")
+  ehd[[col_name]] <- 0.5*ehd[[col_name]]               #1/2 the Enviro. Effects variable
+  
+  col_name <- paste0("frp", type, hnh, ".ss", sep = "") #re-set col_name variable to final score type: Hier., Simple Sum
+  
+  vars_f <- hier_vars[grepl(type, hier_vars)]
+  
+  ehd[[col_name]] <- percent_rank(rowSums(ehd[, vars_f], na.rm = TRUE))   #FINAL percentile-ranked value 
+  
+  
+  t <- paste(threat, hier, type, sep = "")
+  v <- paste(vuln, hier, type, sep = "")
+  
+  col_name <- paste0("frp", type, hnh, ".m", sep = "") #re-set col_name variable to final score type: Hier., Multiplicative
+  
+  ehd[[col_name]] <- percent_rank(rowSums(ehd[,t])*rowSums(ehd[,v]))    #FINAL percentile-ranked  value 
+  
 }
 
 
-# calculate binary disadvantaged/not variable according to two thresholds:
-#   9s & 10s most stringent (original top 20%)
-#   7s - 10s more recent, less stringent funding threshold (top 40%)
+# generate NON-HIERARCHICAL index values **************************
 
-# specify all suffixes of the 3X2 types of scores calculated
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+# Define the version of values combined
+hier <- '.scr'
+
+# Iterate through the list of categorical sets of variables and scaling types
+for (type in scaling_types) {
+  for (vars_name in names(var_list)) {
+    vars <- var_list[[vars_name]]
+    
+    # Print the current vector name
+    #print(paste("Current vector name:", vars_name))       #used to troubleshoot
+    
+    col_name <- paste0(vars_name, hier, type, sep = "")
+    
+    #print(paste("Current scaling type:", type))           #used to troubleshoot
+    
+    vars <- paste(vars, type, sep = "")
+    
+    ehd[[col_name]] <- rowSums(ehd[, vars], na.rm = TRUE)               #sum to a score for each category
+    
+  }
+}
+
+# now a run to calc final scores
+#pull summary variables aligned w/ non-hier run
+hier_vars <- names(ehd[,grepl(paste0(hier, '_', sep = ''), names(ehd))])
+hnh <- '_nh'      #specify variable coding as non-hier
+
+#define threats & vulnerabilities
+threat <- c("envex", "enveff")
+vuln <- c("senspop", "soecon")
+
+
+for (type in scaling_types) {
+  
+  col_name <- paste0("enveff", hier, type, sep = "")
+  ehd[[col_name]] <- 0.5*ehd[[col_name]]               #1/2 the Enviro. Effects variable
+  
+  col_name <- paste0("frp", type, hnh, ".ss", sep = "") #re-set col_name variable to final score type: non-Hier., Simple Sum
+  
+  vars_f <- hier_vars[grepl(type, hier_vars)]
+  
+  ehd[[col_name]] <- percent_rank(rowSums(ehd[, vars_f], na.rm = TRUE))   #FINAL percentile-ranked value 
+  
+  
+  t <- paste(threat, hier, type, sep = "")
+  v <- paste(vuln, hier, type, sep = "")
+  
+  col_name <- paste0("frp", type, hnh, ".m", sep = "") #re-set col_name variable to final score type: non-Hier., Multiplicative
+  
+  ehd[[col_name]] <- percent_rank(rowSums(ehd[,t])*rowSums(ehd[,v]))    #FINAL percentile-ranked  value 
+  
+}
+
+
+
+# calculate binary disadvantaged/not variable **********************************
+
+# specify all suffixes of the 3X4 types of scores calculated
+suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss", 
+              "_z_h.m", "_mm_h.m", "_d_h.m", 
+              "_z_nh.ss", "_mm_nh.ss", "_d_nh.ss",
+              "_z_nh.m", "_mm_nh.m", "_d_nh.m")
 
 # Loop through the suffixes and create binary output variables
 for (suffix in suffixes) {
-  ehd[[paste0("fsp", suffix)]]<- percent_rank(
-    ehd[[paste0("fs", suffix)]])
-  ehd[[paste0("fsi9", suffix)]] <- ifelse(
-    ehd[[paste0("fsp", suffix)]] < 0.8, 0, 1)
-  ehd[[paste0("fsi7", suffix)]] <- ifelse(
-    ehd[[paste0("fsp", suffix)]] < 0.6, 0, 1)
+  ehd[[paste0("fri7", suffix)]] <- ifelse(
+    ehd[[paste0("frp", suffix)]] < 0.60, 0, 1)
+  ehd[[paste0("fri9", suffix)]] <- ifelse(
+    ehd[[paste0("frp", suffix)]] < 0.80, 0, 1)
 }
 
 
@@ -451,15 +582,32 @@ for (suffix in suffixes) {
 write.csv(ehd, file.path(data.out, 'ehd_allcalcs.csv'), row.names = FALSE)
 
 
+
 # subset to just final scores
-ehd_out <- ehd[, !grepl('prox', names(ehd)) & grepl('fs', names(ehd))] #have to specify the 'prox' drop to remove hazardous waste and treatment disposal facilities (prox_...tsdfs) variables
+ehd_out <- ehd[, !grepl('trn', names(ehd)) & grepl('fr', names(ehd))] #have to specify the 'trn' drop to remove transit expense (trnex) variables
+
 
 # add GEOID variable on
 ehd_out <- cbind(ehd[c(1)], ehd_out)
 
-rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version,
-   ehd, ehd_vars, var_list, col_name, type, var, vars)  #clean-up
+rm(var_list, col_name, hier, hier_vars, hnh, s, t, v, threat, vuln, 
+   suffix, suffixes, scaling_types, type, var, vars, vars_f, vars_name, ehd)           #clean-up
 
+
+#manage & assign disadvantage to base (v.2.0) EHD rank values
+
+ehd_base$frp_base <- ehd_base$frp_base / 10
+
+ehd_base$fri7_base <- ifelse(
+  ehd_base$frp_base < 0.60, 0, 1)
+ehd_base$fri9_base <- ifelse(
+  ehd_base$frp_base < 0.80, 0, 1)
+
+
+# calculate measures of disadvantage variability *************************************
+
+#join base ranks to full set of scores
+ehd_out <- left_join(ehd_out, ehd_base)
 
 
 # calculate measures of disadvantage variability
@@ -468,22 +616,28 @@ rm(avg_calcs, scaling_types, suffix, suffixes, var_group, version,
 ehd_out <- ehd_out %>%
   rowwise() %>%
   mutate(frp_range = 
-           max(c_across(starts_with("fsp"))) - min(c_across(starts_with("fsp")))
+           max(c_across(starts_with("frp"))) - min(c_across(starts_with("frp")))
   ) %>%
   ungroup()
 
 
 # sum of instances of disadvantage assignment
-# create vectors of iterations to be considered
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+# specify all suffixes of the 3X4 types of scores calculated + _base
+suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss", 
+              "_z_h.m", "_mm_h.m", "_d_h.m", 
+              "_z_nh.ss", "_mm_nh.ss", "_d_nh.ss",
+              "_z_nh.m", "_mm_nh.m", "_d_nh.m",
+              "_base")
 
 #sum into a single count
-ehd_out$fsi9_counts <- rowSums(ehd_out[paste0("fsi9", suffixes)])
-ehd_out$fsi7_counts <- rowSums(ehd_out[paste0("fsi7", suffixes)])
+ehd_out$fri9_counts <- rowSums(ehd_out[paste0("fri9", suffixes)])
+ehd_out$fri7_counts <- rowSums(ehd_out[paste0("fri7", suffixes)])
 
 
 #write it out
 write.csv(ehd_out, file.path(data.out, 'ehd_scores.csv'), row.names = FALSE)
+
+rm(ehd_base, ehd_out)    #clean-up
 
 
 #***********************************************************************************************************************
@@ -559,18 +713,64 @@ rm(df, df_list, df_names, i, overlap, tracts_calcs, urban_a)    #clean-up
 ehd_out <- read.csv(file.path(data.out, 'ehd_scores.csv'))
 etc_out <- read.csv(file.path(data.out, 'etc_scores.csv'))
 
+#reduce full scoring to just summary values & GEOID
+ehd_sums <- ehd_out[, grepl('GEOID', names(ehd_out)) | 
+                      grepl('range', names(ehd_out)) | 
+                      grepl('counts', names(ehd_out))]
+etc_sums <- etc_out[, grepl('GEOID', names(etc_out)) | 
+                      grepl('range', names(etc_out)) | 
+                      grepl('counts', names(etc_out))]
 
 # join the index scores to the related shp of tracts
-ehd_out <- ehd_out %>%
+ehd_sums <- ehd_sums %>%
   left_join(select(tracts_10, GEOID, is_urban))
-etc_out <- etc_out %>%
+etc_sums <- etc_sums %>%
   left_join(select(tracts_20, GEOID, is_urban))
 
 # write out shps with added scoring data
-write_sf(ehd_out, file.path(data.out, 'ehd_scores.shp'))
-write_sf(etc_out, file.path(data.out, 'etc_scores.shp'))
+write_sf(ehd_sums, file.path(data.out, 'ehd_sumsUR.shp'))
+write_sf(etc_sums, file.path(data.out, 'etc_sumsUR.shp'))
+
+
+# make a version of the full scores CSV w/ the Urban/Rural designation
+ehd_ur <- st_drop_geometry(select(tracts_10, GEOID, is_urban))
+etc_ur <- st_drop_geometry(select(tracts_20, GEOID, is_urban))
+
+# join the is_urban variable to the calcs then write it out
+ehd_out <- left_join(ehd_out, ehd_ur)
+etc_out <- left_join(etc_out, etc_ur)
+
+write.csv(ehd_out, file.path(data.out, 'ehd_scores.csv'), row.names = FALSE)
+write.csv(etc_out, file.path(data.out, 'etc_scores.csv'), row.names = FALSE)
+
 
 #***********************************************************************************************************************
+
+
+#---FIX integreated into main code BUT ETC disadvantage weirdness---------------------------------------------------------------------
+
+etc_scores <- read.csv(file.path(data.out, 'etc_scores.csv'))
+
+#spot check
+geo_checks <- c('53025010100', '53025011300', '53047970800', '53047970700')
+
+geo <- etc_scores$GEOID
+
+etc_check <- etc_scores[, grepl("fri", names(etc_scores))]
+
+etc_check <- cbind(geo, etc_check)
+
+etc_check <- etc_check[etc_check$geo %in% geo_checks, ]
+etc_check <- etc_scores[etc_scores$GEOID %in% geo_checks, ]
+
+
+#huh - there is a discrepancy between published disadvantage online and classifications in the data download
+
+min(etc_scores$frp_base)
+max(etc_scores$frp_base)
+
+#***********************************************************************************************************************
+
 
 
 

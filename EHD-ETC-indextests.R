@@ -42,28 +42,29 @@ pacman::p_load(readxl, here, snakecase, janitor, data.table, dplyr, naniar, stri
 ##---TEST URBAN/RURAL DISADVANTAGE REPRESENTATION-----------------------------------------------------------------------
 
 #read in data
-ehd_ur <- read_sf(here(data.out, 'ehd_scores.shp')) %>%
-  rename(
-    is_urban = is_urbn   #for some reason this keeps getting shortened when writing sf
-  )
-etc_ur <- read_sf(here(data.out, 'etc_scores.shp'))
+ehd_ur <- read.csv(file.path(data.out, 'ehd_scores.csv'))
+etc_ur <- read.csv(file.path(data.out, 'etc_scores.csv'))
 
 #remove geometry for calculations and ensure only complete cases (some water-only tracts remain)
-ehd_ur <- st_drop_geometry(ehd_ur[complete.cases(ehd_ur$is_urban),])
-etc_ur <- st_drop_geometry(etc_ur[complete.cases(etc_ur$is_urban),])
+ehd_ur <- ehd_ur[complete.cases(ehd_ur$is_urban),]
+etc_ur <- etc_ur[complete.cases(etc_ur$is_urban),]
 
+#ETC Base includes a no-data tract it assigns "2" to for the disadvantage classes SO coerce this to 0 for analysis
+etc_ur$fri_base <- ifelse(etc_ur$fri_base > 1, 0, etc_ur$fri_base)
 
 
 # create vectors of iterations
-#suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
-                #NOTE: sometimes the 'n' gets dropped from "nh" depending on how the st wrote out
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_n", "_mm_n", "_d_n")
+suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss", 
+              "_z_h.m", "_mm_h.m", "_d_h.m", 
+              "_z_nh.ss", "_mm_nh.ss", "_d_nh.ss",
+              "_z_nh.m", "_mm_nh.m", "_d_nh.m",
+              "_base")
+
 
 # EHD -------
 # create vectors of variable thresholds unique to EHD for looping
-#thresholds <- c('fsi9', 'fsi7')
-thresholds <- c('fs9', 'fs7')
-                #NOTE: sometimes the 'i' gets dropped/added depending on how the st wrote out
+thresholds <- c('fri9', 'fri7')
+
 
 # create a list for raw calcs and a df of key outputs for analysis
 ehd_OR_list <- list()
@@ -118,7 +119,11 @@ rm(ct, or, row, suffix, thresh, thresholds)  #clean-up
 # ETC -------
 
 # create vectors of iterations
-suffixes <- c("_z_h", "_mm_h", "_d_h", "_z_nh", "_mm_nh", "_d_nh")
+suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss", 
+              "_z_h.m", "_mm_h.m", "_d_h.m", 
+              "_z_nh.ss", "_mm_nh.ss", "_d_nh.ss",
+              "_z_nh.m", "_mm_nh.m", "_d_nh.m",
+              "_base")
 
 # create a list for raw calcs and a df of key outputs for analysis
 etc_OR_list <- list()
@@ -175,9 +180,13 @@ both_OR <- both_OR %>%
       grepl("mm", it) ~ "min-max",
       grepl("d", it) ~ "deciles"
     ),
+    agg = case_when(
+      grepl(".ss", it) ~ "sum",
+      grepl(".m", it) ~ "mult."
+    ),
     hier = case_when(
-      grepl("_h", it) ~ "hierarchical",
-      grepl("nh", it) ~ "non-hierarchical"
+      grepl("_h", it) ~ "hier.",
+      grepl("nh", it) ~ "non-hier."
     ),
     p.value = case_when(
       chisq < .001 ~ "***",
@@ -194,8 +203,10 @@ both_OR <- both_OR %>%
       c(estimate, conf.low, conf.up),
       ~ round(as.numeric(.x), 2)
     ),
-    version = 
-      paste(index, rescale, hier, thresh, sep = ', '),
+    version = case_when(
+      !is.na(hier) ~ paste(index, rescale, hier, agg, thresh, sep = ', '),
+      is.na(hier) ~ paste(index, 'current version', thresh, sep = ', ')
+    ),
     estimate_lab = 
       paste0(estimate, " (", conf.low, "-", conf.up, ")")
   ) 
