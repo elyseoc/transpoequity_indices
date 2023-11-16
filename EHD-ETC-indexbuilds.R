@@ -359,6 +359,8 @@ suffixes <- c("_z_h.ss", "_mm_h.ss", "_d_h.ss",
 #sum into a single count
 etc_out$fri_counts <- rowSums(etc_out[paste0("fri", suffixes)])
 
+#add variable for all instances of disadvantage classification
+etc_out$fri_any <- ifelse(etc_out$fri_counts > 0, 1, 0)
 
 
 #write it out
@@ -634,10 +636,15 @@ ehd_out$fri9_counts <- rowSums(ehd_out[paste0("fri9", suffixes)])
 ehd_out$fri7_counts <- rowSums(ehd_out[paste0("fri7", suffixes)])
 
 
+#add variable for all instances of disadvantage classification
+ehd_out$fri_any <- ifelse(ehd_out$fri7_counts > 0, 1, 0)
+
+
 #write it out
 write.csv(ehd_out, file.path(data.out, 'ehd_scores.csv'), row.names = FALSE)
 
 rm(ehd_base, ehd_out)    #clean-up
+
 
 
 #***********************************************************************************************************************
@@ -716,10 +723,12 @@ etc_out <- read.csv(file.path(data.out, 'etc_scores.csv'))
 #reduce full scoring to just summary values & GEOID
 ehd_sums <- ehd_out[, grepl('GEOID', names(ehd_out)) | 
                       grepl('range', names(ehd_out)) | 
-                      grepl('counts', names(ehd_out))]
-etc_sums <- etc_out[, grepl('GEOID', names(etc_out)) | 
-                      grepl('range', names(etc_out)) | 
-                      grepl('counts', names(etc_out))]
+                      grepl('counts', names(ehd_out))|
+                      grepl('any', names(ehd_out))]
+etc_sums <- etc_out[,c('GEOID', 'frp_range', 'fri_counts', 
+                       'fri_any', 'fri_mm_h.ss')] %>%
+  dplyr::rename(fri_bcomp = fri_mm_h.ss)    #KEEP this base-comparable index calc for comparison to base values due to discrepancy between online ETC explorer disadvantage status vs. downloaded data
+
 
 # join the index scores to the related shp of tracts
 ehd_sums <- ehd_sums %>%
@@ -727,9 +736,11 @@ ehd_sums <- ehd_sums %>%
 etc_sums <- etc_sums %>%
   left_join(select(tracts_20, GEOID, is_urban))
 
+
 # write out shps with added scoring data
 write_sf(ehd_sums, file.path(data.out, 'ehd_sumsUR.shp'))
 write_sf(etc_sums, file.path(data.out, 'etc_sumsUR.shp'))
+
 
 
 # make a version of the full scores CSV w/ the Urban/Rural designation
@@ -747,27 +758,88 @@ write.csv(etc_out, file.path(data.out, 'etc_scores.csv'), row.names = FALSE)
 #***********************************************************************************************************************
 
 
-#---FIX integreated into main code BUT ETC disadvantage weirdness---------------------------------------------------------------------
+#---COMPARATIVE DISADVANTAGE FROM BOTH---------------------------------------------------------------------
 
-etc_scores <- read.csv(file.path(data.out, 'etc_scores.csv'))
+#read in data
+ehd_out <- read.csv(file.path(data.out, 'ehd_scores.csv'))
+etc_out <- read.csv(file.path(data.out, 'etc_scores.csv'))
 
-#spot check
-geo_checks <- c('53025010100', '53025011300', '53047970800', '53047970700')
-
-geo <- etc_scores$GEOID
-
-etc_check <- etc_scores[, grepl("fri", names(etc_scores))]
-
-etc_check <- cbind(geo, etc_check)
-
-etc_check <- etc_check[etc_check$geo %in% geo_checks, ]
-etc_check <- etc_scores[etc_scores$GEOID %in% geo_checks, ]
+ehd_sums <- read_sf(here(data.out, 'ehd_sumsUR.shp'))
+etc_sums <- read_sf(here(data.out, 'etc_sumsUR.shp'))
 
 
-#huh - there is a discrepancy between published disadvantage online and classifications in the data download
+ehd_out$fri_any_z <- ifelse(
+  rowSums(ehd_out[,grepl('fri7_z', names(ehd_out))]) > 0, 1, 0
+)
+etc_out$fri_any_z <- ifelse(
+  rowSums(etc_out[,grepl('fri_z', names(etc_out))]) > 0, 1, 0
+)
 
-min(etc_scores$frp_base)
-max(etc_scores$frp_base)
+ehd_sums <- left_join(ehd_out[,c('GEOID','fri_any_z')], ehd_sums)
+etc_sums <- left_join(etc_out[,c('GEOID','fri_any_z')], etc_sums)
+
+
+# write out shps with added z-score disadvantage indicator 
+write_sf(ehd_sums, file.path(data.out, 'ehd_sumsUR.shp'))
+write_sf(etc_sums, file.path(data.out, 'etc_sumsUR.shp'))
+# and csv
+write.csv(ehd_out, file.path(data.out, 'ehd_scores.csv'), row.names = FALSE)
+write.csv(etc_out, file.path(data.out, 'etc_scores.csv'), row.names = FALSE)
+
+
+#***NOTE*** the remainder of this analysis completed in ArcGIS Pro using 'Apportion Polygon' tool
+
+
+
+#---FINAL attempt to recreate discrepancy in ETC published data---------------------------------------------------------------------
+
+# EXPLANATION: there is a discrepancy between the assignment of disadvantage 
+# (and associated final score percent rankings of tracts) in the ETC data download
+# vs. the data back-ending the ETC explorer online vs. my calculated version
+# (min-max, hierarchical, simple sum) which ~should~ match the values in at least
+# one of the published versions (it matches neither).
+# Two explanations are likely:
+#   1. additional data processing/more detailed handling of each variable went into
+#       the published scores/ranks/disadvantage assignments that were not included 
+#       in published documentation
+#   2. some data hygiene QA/QC steps have been missed
+# 
+# Explanation 1 addresses the discrepancy between my calculation and
+# both published outcomes and 
+# Explanation 2 addresses the discrepancy between the two versions currently 
+# published
+# 
+# This section is my final attempt to reconcile/recreate the data version
+# currently (11/15/2023) accessible via the ETC Explorer online tool, State Results
+# https://experience.arcgis.com/experience/0920984aa80a4362b8778d779b090723/page/ETC-Explorer---State-Results/
+
+
+#read in data
+etc_all <- read.csv(file.path(data.out, 'etc_allcalcs.csv'))
+etc_out <- read.csv(file.path(data.out, 'etc_scores.csv'))
+etc_sums <- read_sf(here(data.out, 'etc_sumsUR.shp'))
+
+etc_check <- etc_all[,c('trncm.scr_mm', 'evncm.scr_mm', 'hltcm.scr_mm', 
+                        'sclcm.scr_mm', 'clmcm.scr_mm')]
+
+etc_check$frp_avg <- percent_rank(rowSums(etc_check)/5)
+
+etc_check$fri_avg <- ifelse(
+  etc_check$frp_avg < 0.65, 0, 1)
+
+
+etc_check <- cbind(etc_all[c(1)], etc_check)
+
+
+# etc_sums <- etc_sums[, !grepl('avg', names(etc_sums))]
+
+etc_sums <- left_join(etc_check[,c('GEOID','frp_avg','fri_avg')], etc_sums)
+
+
+# write out shp with added calc replication attempt
+write_sf(etc_sums, file.path(data.out, 'etc_sumsUR.shp'))
+
+#STILL NOT comparable to the online ETC Explorer version (though closer than the others)
 
 #***********************************************************************************************************************
 
@@ -827,6 +899,41 @@ pacman::p_load(readxl, snakecase, janitor, data.table, naniar, stringr, magrittr
                cluster, ggdendro, #HCA packages
                #caret, mlbench, randomForest, pls,
                zoo)
+
+
+
+
+# MY SCRAP: initial checking discrepancies btw published versions of ETC data ---------------------------
+
+etc_scores <- read.csv(file.path(data.out, 'etc_scores.csv'))
+
+#spot check
+geo_checks <- c('53025010100', '53025011300', '53047970800', '53047970700')
+
+geo <- etc_scores$GEOID
+
+etc_check <- etc_scores[, grepl("fri", names(etc_scores))]
+
+etc_check <- cbind(geo, etc_check)
+
+etc_check <- etc_check[etc_check$geo %in% geo_checks, ]
+etc_check <- etc_scores[etc_scores$GEOID %in% geo_checks, ]
+
+
+#huh - there is a discrepancy between published disadvantage online and classifications in the data download
+
+min(etc_scores$frp_base)
+max(etc_scores$frp_base)
+
+
+
+
+
+
+
+
+
+
 
 
 #***********************************************************************************************************************
